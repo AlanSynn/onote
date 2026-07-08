@@ -52,7 +52,7 @@ notify-debouncer-mini = { version = "0.5", default-features = false }
 
 # TUI
 ratatui = "0.29"
-crossterm = "0.28"
+crossterm = "0.29"
 
 # Images
 image = "0.25"
