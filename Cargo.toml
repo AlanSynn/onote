@@ -84,8 +84,9 @@ pretty_assertions = "1"
 # binary, so it has NO runtime dependencies (glibc-independent — installs on any
 # Debian/Ubuntu/Mint). NOTE: specifying `assets` REPLACES cargo-deb's default
 # asset set, so the binary MUST be listed explicitly here or the `.deb` ships
-# docs only. This `.deb` is musl-only, so the binary source path is pinned to
-# the musl target dir.
+# docs only. `target/release/onote` is a cargo-deb SPECIAL PREFIX — it is
+# rewritten to the actual target dir (e.g. target/x86_64-unknown-linux-musl) at
+# package time when `--target` is passed.
 [package.metadata.deb]
 maintainer = "AlanSynn <noreply@github.com>"
 copyright = "2026, onote contributors"
@@ -94,7 +95,7 @@ section = "utils"
 priority = "optional"
 extended-description-file = "README.md"
 assets = [
-    ["target/x86_64-unknown-linux-musl/release/onote", "usr/bin/onote", "755"],
+    ["target/release/onote", "usr/bin/onote", "755"],
     ["README.md", "usr/share/doc/onote/", "644"],
     ["LICENSE", "usr/share/doc/onote/", "644"],
 ]
