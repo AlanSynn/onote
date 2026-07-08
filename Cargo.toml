@@ -82,9 +82,10 @@ pretty_assertions = "1"
 # Debian package metadata for `cargo deb` (produces the portable Linux `.deb` in
 # the Release workflow's `linux-portable` job). The `.deb` wraps the STATIC musl
 # binary, so it has NO runtime dependencies (glibc-independent — installs on any
-# Debian/Ubuntu/Mint). `cargo deb` auto-installs the single `onote` binary at
-# `/usr/bin/onote`; here we only declare the maintainer, the (empty) dependency
-# list, and the doc assets.
+# Debian/Ubuntu/Mint). NOTE: specifying `assets` REPLACES cargo-deb's default
+# asset set, so the binary MUST be listed explicitly here or the `.deb` ships
+# docs only. This `.deb` is musl-only, so the binary source path is pinned to
+# the musl target dir.
 [package.metadata.deb]
 maintainer = "AlanSynn <noreply@github.com>"
 copyright = "2026, onote contributors"
@@ -93,6 +94,7 @@ section = "utils"
 priority = "optional"
 extended-description-file = "README.md"
 assets = [
+    ["target/x86_64-unknown-linux-musl/release/onote", "usr/bin/onote", "755"],
     ["README.md", "usr/share/doc/onote/", "644"],
     ["LICENSE", "usr/share/doc/onote/", "644"],
 ]

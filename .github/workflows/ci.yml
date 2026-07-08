@@ -83,8 +83,13 @@ jobs:
       - name: Build .deb (validate packaging)
         run: cargo deb --target x86_64-unknown-linux-musl --no-build --output onote-test.deb
 
-      - name: Sanity — .deb has no runtime deps (static musl)
+      - name: Sanity — .deb is well-formed (static + ships the binary)
         run: |
           deps="$(dpkg-deb -f onote-test.deb Depends | tr -d '[:space:]')"
           echo "Depends: '${deps}'"
           test -z "${deps}" || { echo "expected empty Depends for static musl .deb"; exit 1; }
+          # The .deb must actually contain the binary. Catches an `assets =`
+          # override that accidentally dropped it (an empty-Depends check alone
+          # can't — a docs-only .deb still has empty Depends).
+          dpkg-deb -c onote-test.deb | grep -q ' /usr/bin/onote$' \
+            || { echo "expected /usr/bin/onote in .deb payload"; dpkg-deb -c onote-test.deb; exit 1; }
