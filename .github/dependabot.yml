@@ -9,6 +9,16 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     labels: ["dependencies"]
+    # `notify` 8 and `ratatui-image` 11 are major bumps that need real migration
+    # work (notify split into `notify` + `notify-types`, moving `RecursiveMode`;
+    # ratatui-image 11 changed its build script / native-dep surface). They are
+    # deferred to a dedicated upgrade — v0.1.x ships on the stable notify 7 and
+    # ratatui-image 6. Minor/patch updates for these crates still flow through.
+    ignore:
+      - dependency-name: "notify"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "ratatui-image"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"
