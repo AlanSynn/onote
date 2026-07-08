@@ -267,7 +267,12 @@ attachment_dir = "{val}"
             Config::load_from(Some(tmp.path()))
         }
 
-        for bad in ["", ".", "/abs", "../x"] {
+        // `/abs` is absolute on Unix but NOT on Windows (no drive letter), so
+        // `Path::is_absolute()` would let it through the absolute-attachment_dir
+        // guard on Windows. Pick a value the host considers absolute so the
+        // guard is exercised on every platform.
+        let abs = if cfg!(windows) { "C:/abs" } else { "/abs" };
+        for bad in ["", ".", abs, "../x"] {
             match try_load(bad) {
                 Err(ConfigError::Invalid { field, .. }) => {
                     assert_eq!(
