@@ -16,6 +16,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - _Nothing yet._
 
+## [0.2.1] - 2026-07-08
+
+Portable Linux release: easy `apt`-style install plus a distro-agnostic static binary.
+
+### Added
+
+- **Portable Linux target** (`x86_64-unknown-linux-musl`): a fully static binary
+  with no glibc runtime dependency, so the same artifact runs on any Linux
+  distro (fixes the glibc ≥ 2.39 requirement of the GNU build on older
+  Ubuntu/Debian). Shipped as `onote-x86_64-unknown-linux-musl.tar.gz`.
+- **apt `.deb` package** (`onote-x86_64-linux.deb`): wraps the static musl
+  binary with no runtime dependencies — `sudo dpkg -i onote-x86_64-linux.deb`
+  installs `/usr/bin/onote` on any Debian/Ubuntu/Mint. SLSA build provenance is
+  attached like every other release asset.
+- **`install.sh` prebuilt fast path**: on x86_64 Linux the installer now
+  downloads and installs the matching static musl binary directly, skipping the
+  ~2 min `cargo build`; every other platform (and any download failure) falls
+  back to building the pinned release from source. Pass `--from-source` to force
+  a local build.
+
+### Changed
+
+- CI gains a `linux-musl` job and the Release workflow gains a `linux-portable`
+  job so the musl compile and `.deb` packaging are validated on every push, not
+  only at tag time.
+
 ## [0.2.0] - 2026-07-08
 
 Cross-platform release: Windows joins macOS and Linux as a first-class target.
@@ -69,6 +95,7 @@ vault — local-first, single binary, no network required for core use.
   an `install.sh` installer script.
 - MIT license.
 
-[Unreleased]: https://github.com/AlanSynn/onote/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/AlanSynn/onote/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/AlanSynn/onote/releases/tag/v0.2.1
 [0.2.0]: https://github.com/AlanSynn/onote/releases/tag/v0.2.0
 [0.1.0]: https://github.com/AlanSynn/onote/releases/tag/v0.1.0

@@ -46,3 +46,45 @@ jobs:
 
       - name: Tests
         run: cargo test --all
+
+  # Portable Linux target: a STATIC musl binary (no glibc runtime dep — runs on
+  # any distro) plus the `.deb` that wraps it (apt-format package, no runtime
+  # deps). Mirrors the Release `linux-portable` job so the musl compile + deb
+  # packaging are validated on every push, not only at tag time.
+  linux-musl:
+    name: Linux musl (portable) + .deb
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Install musl toolchain + cargo-deb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          cargo install cargo-deb --locked
+
+      - name: Install Rust stable + musl target
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: ci-musl-deb
+
+      - name: Build static musl binary
+        env:
+          # rusqlite's bundled SQLite compiles C; point cc-rs at the musl gcc.
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Build .deb (validate packaging)
+        run: cargo deb --target x86_64-unknown-linux-musl --no-build --output onote-test.deb
+
+      - name: Sanity — .deb has no runtime deps (static musl)
+        run: |
+          deps="$(dpkg-deb -f onote-test.deb Depends | tr -d '[:space:]')"
+          echo "Depends: '${deps}'"
+          test -z "${deps}" || { echo "expected empty Depends for static musl .deb"; exit 1; }

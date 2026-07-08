@@ -70,8 +70,10 @@ The vault directory is plain Markdown plus an attachments folder — onote reads
 
 ## Install
 
-> Built and tested on **macOS arm64**, **Linux**, and **Windows** — `crossterm`,
-> `notify`, and `getrandom` are cross-platform. Building from source needs **Rust ≥ 1.82**.
+> Prebuilt binaries ship for **macOS** (arm64 + x86_64), **Windows** (x86_64), and
+> **Linux x86_64** (a fully static musl build plus an apt `.deb`, no runtime deps).
+> Building from source needs **Rust ≥ 1.82**; `crossterm`, `notify`, and `getrandom`
+> are cross-platform.
 
 **Homebrew** — recommended on macOS
 
@@ -80,6 +82,19 @@ brew tap alansynn/tap
 brew install onote
 ```
 
+**Debian / Ubuntu `.deb`** — recommended on Linux x86_64
+
+The release ships a fully **static musl binary** wrapped in a `.deb` with **no
+runtime dependencies** — it installs on any Debian, Ubuntu, or Mint regardless of
+glibc version. Download and install in one line:
+
+```bash
+curl -L https://github.com/AlanSynn/onote/releases/latest/download/onote-x86_64-linux.deb -o /tmp/onote.deb
+sudo dpkg -i /tmp/onote.deb
+```
+
+(Or grab it from the [Releases page](https://github.com/AlanSynn/onote/releases/latest).)
+
 **Scoop** — recommended on Windows
 
 ```powershell
@@ -87,13 +102,16 @@ scoop bucket add alansynn/onote
 scoop install onote
 ```
 
-**One-line installer** — recommended on Linux; builds the **pinned release** via `install.sh`, lands the binary in `~/.local/bin`
+**One-line installer** — any Linux (or any platform with Rust); downloads the
+**prebuilt static binary** on x86_64 Linux, falls back to a from-source build elsewhere
 
 ```bash
 curl -L https://raw.githubusercontent.com/AlanSynn/onote/main/install.sh | sh
 ```
 
-The installer builds the latest tagged release by default — not mutable `main` — so the code you compile is audited and pinned. (Pin a specific version with `ONOTE_TAG=v0.x.y`.)
+On x86_64 Linux this skips the ~2 min `cargo build` and lands the binary in
+`~/.local/bin`; other platforms build the pinned release via `cargo`. (Pin a
+specific version with `ONOTE_TAG=v0.x.y`; force a source build with `--from-source`.)
 
 **Build from source** — dev / latest
 
