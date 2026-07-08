@@ -1,0 +1,18 @@
+# Dependabot — keeps Cargo dependencies and GitHub Actions up to date. A
+# local-first CLI shipping `rusqlite`/`axum`/`image`/`ratatui-image` benefits
+# from timely notices when security-relevant transitive crates release fixes.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]

@@ -1,0 +1,92 @@
+# Release build — triggered by pushing a `v*` tag (e.g. `v0.1.0`). Builds
+# optimized native binaries for the primary targets and attaches them to the
+# GitHub Release, so `install.sh` can be paired with prebuilt binaries later
+# (today it still builds from source). LTO + strip come from [profile.release].
+#
+# Shape: a `build` job matrix runs the same gate as `ci.yml` (test + clippy)
+# BEFORE building, so a tag on a red SHA never ships artifacts. Each matrix leg
+# uploads its tarball as a workflow artifact; a single `release` job
+# (`needs: build`) downloads them all and attaches them to the GitHub Release in
+# one upload — no concurrent-upload race. Windows is intentionally out of v0.1.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # softprops/action-gh-release needs this to upload assets
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable + target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # Gate: refuse to build a release binary on a commit that fails the same
+      # checks CI enforces. `--all` and `-D warnings` mirror .github/workflows/ci.yml.
+      - name: Gate (clippy + tests)
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo test --all
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Stage + archive
+        run: |
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/onote staging/
+          # Ship install.sh alongside so a downloaded archive is self-installing.
+          cp install.sh staging/ 2>/dev/null || true
+          tar -czf onote-${{ matrix.target }}.tar.gz -C staging .
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: onote-${{ matrix.target }}
+          path: onote-${{ matrix.target }}.tar.gz
+          retention-days: 7
+
+  release:
+    name: Attach to GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout (for install.sh + provenance)
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Attach to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*
+          fail_on_unmatched_files: true

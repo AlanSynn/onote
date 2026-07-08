@@ -1,0 +1,43 @@
+# --- Rust build output ---
+/target/
+**/*.rs.bk
+
+# Keep Cargo.lock: onote is a published binary (application crate), not a
+# library. A locked dependency set is part of reproducible release builds and
+# the `--locked` flag the installer relies on.
+
+# --- onote runtime cache (never commit a derived index; §6.1) ---
+.onote/
+
+# --- macOS ---
+.DS_Store
+
+# --- Secrets (none today; defensive so a dropped token/fixture never lands) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets.*
+secrets_*
+
+# --- Editor cruft ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- oh-my-claudecode operational state (ignored by default per OMC global
+#     convention; .omc/skills/** is the intentional committable exception) ---
+.omc/state/
+.omc/logs/
+.omc/artifacts/
+.omc/handoffs/
+.omc/research/
+.omc/plans/
+.omc/notepad.md
+.omc/project-memory.json
+.omc/autopilot/
+.omc/ultragoal/
+.omc/sessions/

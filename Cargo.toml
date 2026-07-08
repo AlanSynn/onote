@@ -1,0 +1,87 @@
+[package]
+name = "onote"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Terminal-native, Obsidian-compatible Markdown vault client"
+license = "MIT"
+publish = false
+authors = ["onote contributors"]
+repository = "https://github.com/AlanSynn/onote"
+homepage = "https://github.com/AlanSynn/onote"
+readme = "README.md"
+keywords = ["markdown", "obsidian", "terminal", "tui", "notes"]
+categories = ["command-line-utilities", "text-editors"]
+
+[[bin]]
+name = "onote"
+path = "src/main.rs"
+
+# No feature flags: ratatui/axum/image are core to the single binary. Declaring
+# them as optional features without `cfg(feature)` gates would be misleading
+# metadata (a `--no-default-features` build would still pull them in).
+
+[dependencies]
+# Markdown
+comrak = { version = "0.34", features = ["shortcodes"] }
+
+# Config / serialization / paths
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+directories = "5"
+shellexpand = "3"
+
+# Errors / logging
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+
+# Search / index
+rusqlite = { version = "0.32", features = ["bundled"] }
+nucleo-matcher = "0.3"
+
+# File watching
+notify = "7"
+notify-debouncer-mini = { version = "0.5", default-features = false }
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Images
+image = "0.25"
+ratatui-image = "6"
+unicode-width = "0.2"
+
+# Clipboard
+arboard = "3"
+
+# Share server
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs"] }
+qr2term = "0.3"
+
+# Misc
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
+pretty_assertions = "1"
+
+# Distribution profile (`CLAUDE.md` §2.1 single-binary `curl` install). LTO +
+# single codegen unit shrink the binary and speed startup; `strip` drops debug
+# symbols. NOTE: `panic = "abort"` is intentionally NOT set — the TUI relies on
+# `TerminalGuard::drop` (unwind) to restore the terminal on a panic, so abort
+# would strand the user in raw alternate-screen mode if a panic ever fires.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
