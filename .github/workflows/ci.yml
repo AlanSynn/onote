@@ -91,5 +91,5 @@ jobs:
           # The .deb must actually contain the binary. Catches an `assets =`
           # override that accidentally dropped it (an empty-Depends check alone
           # can't — a docs-only .deb still has empty Depends).
-          dpkg-deb -c onote-test.deb | grep -q ' /usr/bin/onote$' \
+          dpkg-deb -c onote-test.deb | grep -q 'usr/bin/onote$' \
             || { echo "expected /usr/bin/onote in .deb payload"; dpkg-deb -c onote-test.deb; exit 1; }
