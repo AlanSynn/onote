@@ -6,7 +6,6 @@
 //! concurrency (`CLAUDE.md` §7).
 
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -302,6 +301,7 @@ fn file_mtime_secs(path: &Path) -> Result<i64, VaultError> {
 fn write_private(path: &Path, body: &str) -> Result<(), VaultError> {
     #[cfg(unix)]
     {
+        use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let mut f = fs::OpenOptions::new()
             .write(true)
