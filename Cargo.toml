@@ -56,7 +56,7 @@ crossterm = "0.28"
 
 # Images
 image = "0.25"
-ratatui-image = "6"
+ratatui-image = "11"
 unicode-width = "0.2"
 
 # Clipboard
