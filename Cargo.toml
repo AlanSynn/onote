@@ -43,7 +43,7 @@ clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 
 # Search / index
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 nucleo-matcher = "0.3"
 
 # File watching
