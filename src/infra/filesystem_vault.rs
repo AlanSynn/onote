@@ -584,7 +584,15 @@ mod tests {
         // order while only checking presence. `FileTimes::set_modified` /
         // `File::set_times` are stable since 1.75 (MSRV is 1.82).
         let set_mtime = |name: &str, secs: u64| {
-            let f = std::fs::File::open(root.join(name)).expect("open for set_times");
+            // Open with write access: on Windows, `SetFileTime` (the backend for
+            // `File::set_times`) needs `FILE_WRITE_ATTRIBUTES`, which a
+            // read-only `File::open` handle lacks — so a read-only handle makes
+            // `set_times` fail with access denied on Windows. `GENERIC_WRITE`
+            // includes that right and is harmless on Unix.
+            let f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(root.join(name))
+                .expect("open for set_times");
             let times = std::fs::FileTimes::new()
                 .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs));
             f.set_times(times).expect("set_times");

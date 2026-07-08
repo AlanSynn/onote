@@ -201,14 +201,26 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    /// A TOML-basic-string-escaped absolute vault path that satisfies the
+    /// `is_absolute()` validation on every platform. Hard-coding `/tmp/vault`
+    /// (as earlier revisions did) breaks on Windows, where a drive-less path is
+    /// NOT absolute and is rejected at load time. The path need not exist on
+    /// disk — only be absolute. Backslashes (Windows) are doubled so the value
+    /// parses as a TOML basic string.
+    fn abs_vault_toml() -> String {
+        let p = std::env::temp_dir().join("onote-cfg-test-vault");
+        p.to_string_lossy().replace('\\', "\\\\")
+    }
+
     #[test]
     fn parses_full_config() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let mut f = tmp.reopen().unwrap();
+        let vault = abs_vault_toml();
         writeln!(
             f,
             r#"
-vault = "/tmp/vault"
+vault = "{vault}"
 default_note = "Scratch.md"
 attachment_dir = "Attachments"
 daily_dir = "Daily"
@@ -221,7 +233,7 @@ share_allow_lan = true
         )
         .unwrap();
         let cfg = Config::load_from(Some(tmp.path())).unwrap();
-        assert_eq!(cfg.vault, PathBuf::from("/tmp/vault"));
+        assert_eq!(cfg.vault, std::env::temp_dir().join("onote-cfg-test-vault"));
         assert_eq!(cfg.image_link_style, LinkStyle::Obsidian);
         assert_eq!(cfg.share_port, 8000);
         assert!(cfg.share_allow_lan);
@@ -243,10 +255,11 @@ share_allow_lan = true
         fn try_load(val: &str) -> Result<Config, ConfigError> {
             let tmp = tempfile::NamedTempFile::new().unwrap();
             let mut f = tmp.reopen().unwrap();
+            let vault = abs_vault_toml();
             writeln!(
                 f,
                 r#"
-vault = "/tmp/vault"
+vault = "{vault}"
 attachment_dir = "{val}"
 "#
             )
@@ -272,25 +285,30 @@ attachment_dir = "{val}"
     #[test]
     fn missing_file_yields_default() {
         let cfg = Config::load_from(None).unwrap();
-        let vault = cfg.vault.to_string_lossy();
-        // The suffix check alone is satisfied by a *literal* `~/Notes/Vault` —
-        // i.e. by `shellexpand::tilde` silently leaving the `~` unexpanded.
-        // Prove tilde expansion actually ran: the resolved vault must be
-        // absolute (the home dir is always absolute on unix) and must contain
-        // no literal `~`. A regression that broke `shellexpand::tilde` (e.g.
-        // swapping it for a plain `PathBuf::from`) would pass the suffix check
-        // but fail these two.
+        // Default vault is `~/Notes/Vault` with `~` tilde-expanded. A *literal*
+        // unexpanded `~/Notes/Vault` would also end in `Notes/Vault`, so prove
+        // expansion actually ran. The checks are component/`Path`-level, not
+        // string-level: `starts_with('/')` / a forward-slash `ends_with` would
+        // pass on Unix but FAIL on Windows, where the separator is `\` and the
+        // home dir is a drive-rooted absolute path. A regression that broke
+        // `shellexpand::tilde` (e.g. a plain `PathBuf::from`) passes the suffix
+        // check but fails the absolute + no-`~` checks.
         assert!(
-            vault.ends_with("Notes/Vault"),
-            "default vault suffix mismatch; got {vault:?}",
+            cfg.vault.is_absolute(),
+            "default vault must be absolute after tilde expansion; got {:?}",
+            cfg.vault,
+        );
+        // `Path::ends_with` compares components and treats `/` and `\` alike on
+        // Windows, so this is separator-agnostic.
+        assert!(
+            cfg.vault.ends_with(Path::new("Notes/Vault")),
+            "default vault must end in Notes/Vault; got {:?}",
+            cfg.vault,
         );
         assert!(
-            vault.starts_with('/'),
-            "default vault must be absolute after tilde expansion; got {vault:?}",
-        );
-        assert!(
-            !vault.contains('~'),
-            "default vault must not contain a literal `~` after expansion; got {vault:?}",
+            !cfg.vault.to_string_lossy().contains('~'),
+            "default vault must not contain a literal `~` after expansion; got {:?}",
+            cfg.vault,
         );
     }
 
