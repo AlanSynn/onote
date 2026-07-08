@@ -3,10 +3,10 @@
 # This workflow mirrors the local `just ci` gate (fmt-check + clippy + tests)
 # so the two never drift: what passes locally passes in CI, and vice versa.
 # `cargo clippy ... -- -D warnings` is intentional — warnings are treated as
-# errors to keep the tree clean. Linux is verified alongside macOS because the
-# project is macOS-developed but built on cross-platform crates (comrak,
-# ratatui, notify, rusqlite, axum, git CLI) that must not silently regress on
-# Linux. Windows is intentionally not a v0.1 target.
+# errors to keep the tree clean. Linux and Windows are verified alongside macOS
+# because the project is macOS-developed but built on cross-platform crates
+# (comrak, ratatui, notify, rusqlite, axum, git CLI) that must not silently
+# regress on the other platforms.
 name: CI
 
 on:
@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
       - name: Checkout

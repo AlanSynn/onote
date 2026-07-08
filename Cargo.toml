@@ -1,6 +1,6 @@
 [package]
 name = "onote"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.82"
 description = "Terminal-native, Obsidian-compatible Markdown vault client"
@@ -71,6 +71,9 @@ qr2term = "0.3"
 # Misc
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 base64 = "0.22"
+
+# Cross-platform CSPRNG for the share server's tokenized URL (Unix + Windows).
+getrandom = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

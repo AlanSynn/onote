@@ -1,13 +1,15 @@
-# Release build — triggered by pushing a `v*` tag (e.g. `v0.1.0`). Builds
-# optimized native binaries for the primary targets and attaches them to the
+# Release build — triggered by pushing a `v*` tag (e.g. `v0.2.0`). Builds
+# optimized native binaries for all primary targets and attaches them to the
 # GitHub Release, so `install.sh` can be paired with prebuilt binaries later
 # (today it still builds from source). LTO + strip come from [profile.release].
 #
 # Shape: a `build` job matrix runs the same gate as `ci.yml` (test + clippy)
 # BEFORE building, so a tag on a red SHA never ships artifacts. Each matrix leg
-# uploads its tarball as a workflow artifact; a single `release` job
-# (`needs: build`) downloads them all and attaches them to the GitHub Release in
-# one upload — no concurrent-upload race. Windows is intentionally out of v0.1.
+# uploads its archive (`.tar.gz` on Unix, `.zip` on Windows) as a workflow
+# artifact; a single `release` job (`needs: build`) downloads them all and
+# attaches them to the GitHub Release in one upload — no concurrent-upload race.
+# Targets: macOS arm64 + x86_64 (the latter cross-compiled from Apple Silicon),
+# Linux x86_64, Windows x86_64 (MSVC).
 name: Release
 
 on:
@@ -27,10 +29,16 @@ jobs:
         include:
           - os: macos-14
             target: aarch64-apple-darwin
+            archive: tar.gz
           - os: macos-14                 # cross-compile Intel from Apple Silicon (macos-13/Intel runners are deprecated)
             target: x86_64-apple-darwin
+            archive: tar.gz
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -57,18 +65,26 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Stage + archive
+        shell: bash
         run: |
           mkdir -p staging
-          cp target/${{ matrix.target }}/release/onote staging/
-          # Ship install.sh alongside so a downloaded archive is self-installing.
-          cp install.sh staging/ 2>/dev/null || true
-          tar -czf onote-${{ matrix.target }}.tar.gz -C staging .
+          EXE=""
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then EXE=".exe"; fi
+          cp "target/${{ matrix.target }}/release/onote${EXE}" "staging/onote${EXE}"
+          # Ship install.sh alongside Unix archives so a downloaded tarball is
+          # self-installing. The Windows zip has no shell installer.
+          if [ "${{ matrix.archive }}" != "zip" ]; then
+            cp install.sh staging/ 2>/dev/null || true
+            tar -czf "onote-${{ matrix.target }}.tar.gz" -C staging .
+          else
+            ( cd staging && 7z a "../onote-${{ matrix.target }}.zip" "onote${EXE}" >/dev/null )
+          fi
 
       - name: Upload build artifact
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: onote-${{ matrix.target }}
-          path: onote-${{ matrix.target }}.tar.gz
+          path: onote-${{ matrix.target }}.${{ matrix.archive }}
           retention-days: 7
 
   release:
@@ -92,7 +108,7 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
-          subject-path: assets/*.tar.gz
+          subject-path: assets/*
 
       - name: Attach to the GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2

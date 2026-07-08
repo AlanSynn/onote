@@ -15,7 +15,7 @@ Not an Obsidian replacement — a fast, local-first, terminal-native surface.
 [![CI](https://github.com/AlanSynn/onote/actions/workflows/ci.yml/badge.svg)](https://github.com/AlanSynn/onote/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-%E2%89%A5%201.82-orange.svg)](https://www.rust-lang.org/)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](#install)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#install)
 [![Status](https://img.shields.io/badge/status-MVP-yellow.svg)](#status--non-goals)
 
 `Rust` · `ratatui` · `crossterm` · `local-first` · `obsidian-compatible` · `markdown`
@@ -70,14 +70,21 @@ The vault directory is plain Markdown plus an attachments folder — onote reads
 
 ## Install
 
-> Built and tested on **macOS arm64**. **Linux** works out of the box — `crossterm`
-> and `notify` are cross-platform. Building from source needs **Rust ≥ 1.82**.
+> Built and tested on **macOS arm64**, **Linux**, and **Windows** — `crossterm`,
+> `notify`, and `getrandom` are cross-platform. Building from source needs **Rust ≥ 1.82**.
 
 **Homebrew** — recommended on macOS
 
 ```bash
-brew tap alansynn/onote
+brew tap alansynn/tap
 brew install onote
+```
+
+**Scoop** — recommended on Windows
+
+```powershell
+scoop bucket add alansynn/onote
+scoop install onote
 ```
 
 **One-line installer** — recommended on Linux; builds the **pinned release** via `install.sh`, lands the binary in `~/.local/bin`

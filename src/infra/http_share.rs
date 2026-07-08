@@ -326,26 +326,15 @@ fn html_escape(s: &str) -> String {
 fn random_token() -> Result<ShareToken, ShareError> {
     // The share token gates read access to notes over LAN — it is a security
     // boundary, so a failure to source randomness must be HARD FATAL. We never
-    // degrade to a near-zero-entropy time-derived token: if `/dev/urandom` is
-    // absent or unreadable, we refuse to start the share server.
-    #[cfg(unix)]
-    {
-        use std::io::Read;
-        let mut f = std::fs::File::open("/dev/urandom")
-            .map_err(|e| ShareError::Server(format!("open /dev/urandom: {e}")))?;
-        let mut buf = [0u8; 16];
-        f.read_exact(&mut buf)
-            .map_err(|e| ShareError::Server(format!("read /dev/urandom: {e}")))?;
-        Ok(ShareToken::from_random(&buf))
-    }
-    // No entropy source is wired without a platform-specific RNG dependency;
-    // refuse rather than emit a guessable token.
-    #[cfg(not(unix))]
-    {
-        Err(ShareError::Server(
-            "no random source available on this platform".into(),
-        ))
-    }
+    // degrade to a near-zero-entropy time-derived token: if the OS CSPRNG is
+    // unavailable, we refuse to start the share server.
+    //
+    // `getrandom` reads the platform CSPRNG directly (`/dev/urandom` /
+    // `getentropy` on Unix, `BCryptGenRandom` on Windows), so the same path
+    // works on every target — no platform-specific branch needed.
+    let mut buf = [0u8; 16];
+    getrandom::getrandom(&mut buf).map_err(|e| ShareError::Server(format!("getrandom: {e}")))?;
+    Ok(ShareToken::from_random(&buf))
 }
 
 /// Best-effort primary LAN IPv4 via a connect-less UDP socket.

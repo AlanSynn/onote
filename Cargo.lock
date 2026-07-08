@@ -1798,7 +1798,7 @@ dependencies = [
 
 [[package]]
 name = "onote"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1810,6 +1810,7 @@ dependencies = [
  "comrak",
  "crossterm",
  "directories",
+ "getrandom 0.2.17",
  "image",
  "notify",
  "notify-debouncer-mini",
