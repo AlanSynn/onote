@@ -3,8 +3,8 @@
 ```text
 ╭───────────────────────────────────────────────────────────╮
 │                                                           │
-│   ❯ onote▮                                                │
-│   a terminal scratchpad for your obsidian vault           │
+│                         ❯ onote▮                          │
+│       a terminal scratchpad for your obsidian vault       │
 │                                                           │
 ╰───────────────────────────────────────────────────────────╯
 ```
@@ -26,7 +26,7 @@ Not an Obsidian replacement — a fast, local-first, terminal-native surface.
 
 > **Why onote?** Obsidian is your library; onote is the notebook in your back pocket.
 > The vault — plain Markdown files, `Attachments/`, and `.obsidian/` — stays the
-> **source of truth**. onote just gives you a fast, terminal-native way to read, edit,
+> **source of truth**. onote just gives you a fast way to read, edit,
 > paste images, share over HTTP/QR, and back up to Git without ever leaving the keyboard.
 > No parallel storage model. No lock-in. No replacement.
 
@@ -48,12 +48,12 @@ Not an Obsidian replacement — a fast, local-first, terminal-native surface.
 
 onote is the right tool when you want to:
 
-- ✍️  jot a **global scratch note** without breaking flow
-- 📝  do **quick Markdown editing** in the terminal
-- 🖼️  get an **image-aware terminal preview** of pasted images
-- 🔗  spin up a **read-only QR / web share** of a note on localhost or LAN
-- 🗃️  **back the vault up to GitHub** with one command
-- 🚪  pop the **same note open in the Obsidian GUI** when you need the full surface
+- jot a **global scratch note** without breaking flow
+- do **quick Markdown editing** in the terminal
+- get an **image-aware terminal preview** of pasted images
+- spin up a **read-only QR / web share** of a note on localhost or LAN
+- **back the vault up to GitHub** with one command
+- pop the **same note open in the Obsidian GUI** when you need the full surface
 
 The vault directory is plain Markdown plus an attachments folder — onote reads and writes those files directly.
 
@@ -80,11 +80,13 @@ brew tap alansynn/onote
 brew install onote
 ```
 
-**One-line installer** — builds from source via `install.sh`, lands the binary in `~/.local/bin`
+**One-line installer** — recommended on Linux; builds the **pinned release** via `install.sh`, lands the binary in `~/.local/bin`
 
 ```bash
 curl -L https://raw.githubusercontent.com/AlanSynn/onote/main/install.sh | sh
 ```
+
+The installer builds the latest tagged release by default — not mutable `main` — so the code you compile is audited and pinned. (Pin a specific version with `ONOTE_TAG=v0.x.y`.)
 
 **Build from source** — dev / latest
 
@@ -207,7 +209,7 @@ behind a port, implemented by a swappable infrastructure adapter.
         └──────────►  application  ◄──────────────┘
 ```
 
-**Key crates**
+**Key dependencies**
 
 | Crate                          | Role                                                                  |
 | ------------------------------ | --------------------------------------------------------------------- |
@@ -218,7 +220,7 @@ behind a port, implemented by a swappable infrastructure adapter.
 | `notify`                       | File watching — detects external edits (Obsidian, Git, other editors) |
 | `ratatui-image` + `image`      | In-terminal image preview (Sixel / Kitty / iTerm2)                    |
 | `axum` + `qr2term`             | Read-only HTTP share server + terminal QR output                      |
-| `git` (CLI)                    | Vault backup — `git2` is a future optional backend                    |
+| `git` (CLI)                    | Vault backup via system `git`                    |
 | `arboard`                      | Cross-platform clipboard (text, HTML, image)                          |
 
 ## Design guarantees
@@ -227,7 +229,7 @@ These are load-bearing promises, not aspirations:
 
 - 🟢 **Local-first.** Read, edit, save, paste, search, preview, share, and back up all work offline. Only `git push` / `git pull` and public tunneling need a network.
 - 🟢 **Obsidian-compatible, not Obsidian-dependent.** Understands `[[wikilinks]]`, `![[embeds]]`, `#tags`, frontmatter, daily notes, and the attachments folder — but works on any plain Markdown directory.
-- 🟢 **Optimistic concurrency with conflict detection.** Every buffer tracks `opened_hash` vs `current_disk_hash`. onote **never** silently overwrites an external edit — it enters a `ChangedExternally` state and offers reload / merge / conflict-copy.
+- 🟢 **No silent overwrites.** Every buffer tracks `opened_hash` vs `current_disk_hash`; on detecting an external edit, onote enters a `ChangedExternally` state and offers reload / merge / conflict-copy rather than clobbering it.
 - 🟢 **Share is read-only by default.** The share server serves a snapshot behind a **tokenized URL**, bound to **loopback** unless you explicitly opt into LAN.
 - 🟢 **Backup never touches note content.** `onote backup` commits your Markdown as-is and **excludes the derived `.onote/` SQLite cache**.
 - 🟢 **Portable image links.** Pasted images default to standard Markdown `![](Attachments/…)`; Obsidian-style `![[…]]` is opt-in.

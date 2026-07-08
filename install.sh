@@ -15,6 +15,11 @@ set -eu
 PREFIX="${ONOTE_PREFIX:-$HOME/.local/bin}"
 REPO_DIR=""
 
+# Default to the latest release tag so a bare `curl | sh` builds an audited,
+# pinned release instead of mutable `main` HEAD (supply-chain hardening).
+# Bump this in lockstep with each `git tag v0.x.y` and the Release workflow.
+ONOTE_TAG="${ONOTE_TAG:-v0.1.0}"
+
 usage() {
     cat <<EOF
 onote installer
@@ -27,7 +32,7 @@ Options:
 Environment:
   ONOTE_PREFIX     Same as --prefix
   ONOTE_REPO_URL   Clone URL override (default: github.com/AlanSynn/onote.git)
-  ONOTE_TAG        Pin the clone to a release tag (e.g. v0.1.0); default: default branch
+  ONOTE_TAG        Release tag to build (default: v0.1.0, the latest release)
 EOF
 }
 
@@ -97,10 +102,12 @@ BIN="$SRC_DIR/target/release/onote"
 
 # ── Install ──────────────────────────────────────────────────────────────
 mkdir -p "$PREFIX"
-# Remove any pre-existing target (incl. a symlink) so a planted link cannot
-# redirect the write through it to an attacker-chosen location.
-[ -e "$PREFIX/onote" ] || [ -L "$PREFIX/onote" ] && rm -f "$PREFIX/onote"
-install -m 0755 "$BIN" "$PREFIX/onote"
+# Atomic, symlink-proof install: write to a fresh mktemp name in $PREFIX, then
+# rename(2) into place. rename replaces the destination directory entry without
+# following a symlink planted at $PREFIX/onote, closing the rm->install race.
+NEW="$(mktemp "$PREFIX/.onote.new.XXXXXX")" || exit 1
+install -m 0755 "$BIN" "$NEW" || { rm -f "$NEW"; exit 1; }
+mv -f "$NEW" "$PREFIX/onote"
 
 VERSION="$("$PREFIX/onote" --version 2>/dev/null || echo onote)"
 # ASCII glyphs ([ok], ->): non-UTF-8 / C-locale shells render these reliably

@@ -15,7 +15,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write   # softprops/action-gh-release needs this to upload assets
+  contents: read    # least-privilege default; only the `release` job escalates
 
 jobs:
   build:
@@ -33,16 +33,16 @@ jobs:
             target: x86_64-unknown-linux-gnu
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Install Rust stable + target
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: clippy
           targets: ${{ matrix.target }}
 
       - name: Cache cargo registry & target
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: release-${{ matrix.target }}
 
@@ -65,7 +65,7 @@ jobs:
           tar -czf onote-${{ matrix.target }}.tar.gz -C staging .
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: onote-${{ matrix.target }}
           path: onote-${{ matrix.target }}.tar.gz
@@ -75,18 +75,27 @@ jobs:
     name: Attach to GitHub Release
     runs-on: ubuntu-latest
     needs: build
+    permissions:
+      contents: write      # attach assets to the GitHub Release
+      id-token: write      # OIDC for sigstore signing (build provenance)
+      attestations: write  # publish build-provenance attestations
     steps:
       - name: Checkout (for install.sh + provenance)
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Download all build artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           path: assets
           merge-multiple: true
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: assets/*.tar.gz
+
       - name: Attach to the GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: assets/*
           fail_on_unmatched_files: true
