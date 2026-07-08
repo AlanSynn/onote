@@ -28,7 +28,7 @@ comrak = { version = "0.34", features = ["shortcodes"] }
 # Config / serialization / paths
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-directories = "5"
+directories = "6"
 shellexpand = "3"
 
 # Errors / logging
