@@ -33,7 +33,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust stable + target
         uses: dtolnay/rust-toolchain@stable
@@ -65,7 +65,7 @@ jobs:
           tar -czf onote-${{ matrix.target }}.tar.gz -C staging .
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: onote-${{ matrix.target }}
           path: onote-${{ matrix.target }}.tar.gz
@@ -77,10 +77,10 @@ jobs:
     needs: build
     steps:
       - name: Checkout (for install.sh + provenance)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: assets
           merge-multiple: true

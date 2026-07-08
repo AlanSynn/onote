@@ -70,32 +70,35 @@ The vault directory is plain Markdown plus an attachments folder — onote reads
 
 ## Install
 
-> Requires **Rust ≥ 1.82** (edition 2021). Built and tested on **macOS arm64**;
-> **Linux** should work out of the box — `crossterm` and `notify` are cross-platform.
+> Built and tested on **macOS arm64**. **Linux** works out of the box — `crossterm`
+> and `notify` are cross-platform. Building from source needs **Rust ≥ 1.82**.
 
-**1. From source (dev / latest)**
+**Homebrew** — recommended on macOS
 
 ```bash
-git clone https://github.com/AlanSynn/onote.git
-cd onote
-cargo install --path . --locked
-# or, if you have `just`:
-just install
+brew tap alansynn/onote
+brew install onote
 ```
 
-**2. One-line install** (builds from source via `install.sh`; lands the binary in `~/.local/bin`):
+**One-line installer** — builds from source via `install.sh`, lands the binary in `~/.local/bin`
 
 ```bash
 curl -L https://raw.githubusercontent.com/AlanSynn/onote/main/install.sh | sh
 ```
 
-**3. Build it yourself**
+**Build from source** — dev / latest
 
 ```bash
 git clone https://github.com/AlanSynn/onote.git
 cd onote
-cargo build --release
-# binary lands in target/release/onote
+cargo install --path . --locked
+# or, if you have `just`:  just install
+```
+
+Verify the install:
+
+```bash
+onote --version
 ```
 
 ## First run
