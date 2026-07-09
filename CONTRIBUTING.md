@@ -52,3 +52,28 @@ it is the authoritative design spec. The load-bearing rules:
   in the same PR that introduces it** — that keeps the changelog honest at
   release time instead of being reconstructed from memory.
 - Git tags track the `Cargo.toml` version (e.g. `v0.1.0`).
+
+### Tap auto-bump (Homebrew + Scoop)
+
+Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds the
+binaries, attaches them to the GitHub Release, and then — in the `bump-taps`
+job — automatically bumps the **Homebrew formula** (`AlanSynn/homebrew-tap`) and
+the **Scoop manifest** (`AlanSynn/scoop-onote`) to the new version. So a single
+`git tag vX.Y.Z && git push --tags` updates `brew install onote` and
+`scoop install onote` with no manual formula edit.
+
+The job pushes to **two other repos**, which the workflow's default `GITHUB_TOKEN`
+cannot do. It authenticates with the **`TAP_GITHUB_TOKEN`** repository secret,
+which the maintainer creates once:
+
+1. Create a PAT. Either:
+   - a **classic** token with `repo` scope, or
+   - a **fine-grained** token with `Contents: Read and write` on **both**
+     `AlanSynn/homebrew-tap` and `AlanSynn/scoop-onote`.
+2. Add it as a repository secret named `TAP_GITHUB_TOKEN` in `AlanSynn/onote`
+   (Settings → Secrets and variables → Actions → New repository secret).
+3. Done. The next tag push bumps both taps automatically.
+
+If the secret is absent, `bump-taps` logs a warning and skips — the release
+still ships, only the taps stay stale until the next tag (or a manual bump).
+

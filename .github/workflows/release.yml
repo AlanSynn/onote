@@ -172,3 +172,115 @@ jobs:
         with:
           files: assets/*
           fail_on_unmatched_files: true
+
+  # Bump the Homebrew formula + Scoop manifest to the just-released version, so
+  # `brew install onote` / `scoop install onote` track each `v*` tag without a
+  # manual edit. Runs AFTER `release` (assets are attached) and pushes to TWO
+  # OTHER repos (AlanSynn/homebrew-tap, AlanSynn/scoop-onote), so it authenticates
+  # with the TAP_GITHUB_TOKEN secret (a PAT the maintainer creates — the default
+  # GITHUB_TOKEN cannot push cross-repo). See CONTRIBUTING.md "Releases" for setup.
+  # If the secret is unset, the job warns and skips instead of failing the release.
+  bump-taps:
+    name: Bump Homebrew + Scoop taps
+    runs-on: ubuntu-latest
+    needs: [release]
+    env:
+      TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+    steps:
+      - name: Resolve version
+        id: v
+        run: |
+          TAG="${GITHUB_REF_NAME}"        # v0.2.1
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"   # 0.2.1
+
+      - name: Guard — skip if no tap token
+        id: guard
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning::TAP_GITHUB_TOKEN secret is not set; skipping tap auto-bump. See CONTRIBUTING.md 'Releases'."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Download the two assets the taps reference and hash them. The source
+      # archive (Formula) is GitHub's auto-generated tag tarball; the Windows
+      # .zip (Scoop) is a release asset attached by the `release` job above.
+      - name: Hash source archive + Windows zip
+        if: steps.guard.outputs.skip != 'true'
+        id: sha
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          SRC_URL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz"
+          WIN_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/onote-x86_64-pc-windows-msvc.zip"
+          SRC_SHA=$(curl -fsSL "$SRC_URL" | sha256sum | cut -d' ' -f1)
+          WIN_SHA=$(curl -fsSL "$WIN_URL" | sha256sum | cut -d' ' -f1)
+          test -n "$SRC_SHA" || { echo "source archive hash empty"; exit 1; }
+          test -n "$WIN_SHA" || { echo "windows zip hash empty"; exit 1; }
+          echo "src=$SRC_SHA" >> "$GITHUB_OUTPUT"
+          echo "win=$WIN_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Bump homebrew-tap (Formula/onote.rb)
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+          SRC_SHA: ${{ steps.sha.outputs.src }}
+        run: |
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/AlanSynn/homebrew-tap.git" tap
+          cd tap
+          export URL="https://github.com/AlanSynn/onote/archive/refs/tags/${TAG}.tar.gz"
+          python3 - <<PY
+          import re, pathlib, os
+          f = pathlib.Path("Formula/onote.rb")
+          s = f.read_text()
+          s = re.sub(r'url "[^"]+archive/refs/tags/[^"]+\.tar\.gz"',
+                     f'url "{os.environ["URL"]}"', s)
+          s = re.sub(r'sha256 "[0-9a-f]{64}"',
+                     f'sha256 "{os.environ["SRC_SHA"]}"', s)
+          f.write_text(s)
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/onote.rb
+          if git diff --cached --quiet; then
+            echo "homebrew-tap already at ${TAG}; no commit."
+          else
+            git commit -m "onote ${TAG#v}: bump source archive + sha256"
+            git push
+            echo "homebrew-tap bumped to ${TAG}"
+          fi
+
+      - name: Bump scoop-onote (bucket/onote.json)
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+          VERSION: ${{ steps.v.outputs.version }}
+          WIN_SHA: ${{ steps.sha.outputs.win }}
+        run: |
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/AlanSynn/scoop-onote.git" scoop
+          cd scoop
+          export WIN_URL="https://github.com/AlanSynn/onote/releases/download/${TAG}/onote-x86_64-pc-windows-msvc.zip"
+          python3 - <<PY
+          import re, pathlib, os
+          f = pathlib.Path("bucket/onote.json")
+          s = f.read_text()
+          ver, url, h = (os.environ[k] for k in ("VERSION","WIN_URL","WIN_SHA"))
+          s = re.sub(r'("version"\s*:\s*")[^"]+"', rf'\g<1>{ver}"', s, count=1)
+          s = re.sub(r'("url"\s*:\s*")[^"]+/releases/download/[^"]+onote-x86_64-pc-windows-msvc\.zip"',
+                     rf'\g<1>{url}"', s, count=1)
+          s = re.sub(r'("hash"\s*:\s*")[0-9a-f]{64}"', rf'\g<1>{h}"', s, count=1)
+          # The autoupdate block carries a templated $version url; leave it.
+          f.write_text(s)
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bucket/onote.json
+          if git diff --cached --quiet; then
+            echo "scoop-onote already at ${TAG}; no commit."
+          else
+            git commit -m "onote ${VERSION}: bump version + windows hash"
+            git push
+            echo "scoop-onote bumped to ${TAG}"
+          fi
