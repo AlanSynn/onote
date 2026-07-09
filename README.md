@@ -36,6 +36,7 @@ Not an Obsidian replacement — a fast, local-first, terminal-native surface.
 - [Install](#install)
 - [First run](#first-run)
 - [Commands](#commands)
+- [Keyboard shortcuts](#keyboard-shortcuts)
 - [Configuration](#configuration)
 - [Architecture](#architecture)
 - [Design guarantees](#design-guarantees)
@@ -82,6 +83,11 @@ brew tap alansynn/tap
 brew install onote
 ```
 
+> The tap formula **builds from source** (it pulls `rust` as a build dep, ~2 min) —
+> it does not consume the prebuilt tarballs. For an instant binary on macOS, grab
+> the `onote-aarch64-apple-darwin.tar.gz` (or `x86_64`) from the
+> [Releases page](https://github.com/AlanSynn/onote/releases/latest) instead.
+
 **Debian / Ubuntu `.deb`** — recommended on Linux x86_64
 
 The release ships a fully **static musl binary** wrapped in a `.deb` with **no
@@ -98,7 +104,7 @@ sudo dpkg -i /tmp/onote.deb
 **Scoop** — recommended on Windows
 
 ```powershell
-scoop bucket add alansynn/onote
+scoop bucket add alansynn/scoop-onote
 scoop install onote
 ```
 
@@ -163,12 +169,66 @@ cleanly.
 
 `onote --version` and `onote --help` work (built with `clap`).
 
+## Keyboard shortcuts
+
+The editor resolves every keystroke to a logical action through a
+`KeymapRegistry` (`CLAUDE.md` §5), so **every binding below is remappable** —
+see [Configuration → Keymap](#keymap). Selection is **grapheme-accurate**: a
+combining mark (`e` + ◌́) or a ZWJ emoji is one selectable unit, never split.
+
+**Editing**
+
+| Key                | Action                                   |
+| ------------------ | ---------------------------------------- |
+| (type any key)     | Insert a character                       |
+| `Enter`            | Newline                                  |
+| `Tab`              | Insert tab                               |
+| `Backspace`        | Delete the char before the caret         |
+| `Delete`           | Forward-delete the char after the caret  |
+| `Ctrl+S`           | Save (`write_note`, never silent-overwrite) |
+| `Ctrl+R`           | Reload — discard the buffer, re-read disk   |
+| `Ctrl+K`           | Conflict copy — save as `*.conflict.md`     |
+
+**Navigation**
+
+| Key            | Action                            |
+| -------------- | --------------------------------- |
+| `←` `→` `↑` `↓`| Move the caret                    |
+| `Home` / `End` | Jump to line start / end          |
+| `Ctrl+←` / `Ctrl+→` | Jump a word (skips whitespace, punctuation) |
+
+**Selection** — typing, `Enter`, `Backspace`, or `Delete` **replaces** the
+active selection; `Esc` clears it.
+
+| Key                  | Action                                   |
+| -------------------- | ---------------------------------------- |
+| `Shift+←/→/↑/↓`      | Extend the selection                     |
+| `Shift+Home` / `Shift+End` | Extend to line start / end          |
+| `Ctrl+Shift+←` / `Ctrl+Shift+→` | Extend by a word             |
+| `Ctrl+A`             | Select all                               |
+| Mouse drag           | Select a region (grapheme-snapped)       |
+| `Ctrl+Shift+C`       | **Copy** the selection                   |
+| `Ctrl+X`             | **Cut** the selection (deletes on copy)  |
+| `Esc`                | Clear the selection                      |
+
+**Notes & app**
+
+| Key      | Action                                              |
+| -------- | --------------------------------------------------- |
+| `Ctrl+O` | Fuzzy-open a note                                   |
+| `Ctrl+P` | Paste a clipboard image → `Attachments/` + token    |
+| `Ctrl+D` | Delete the image token under the caret              |
+| `Ctrl+Q` | Quit                                                |
+
+> `Ctrl+C` **also** quits (cancel muscle memory). Copy is `Ctrl+Shift+C` — the
+> `Shift` bit makes it a distinct combo, so the two never clash.
+
 ## Configuration
 
 Full example, all keys:
 
 ```toml
-vault             = "~/Notes/MainVault"
+vault             = "~/Notes/Vault"
 default_note      = "Scratch.md"
 attachment_dir    = "Attachments"
 daily_dir         = "Daily"
@@ -177,6 +237,12 @@ open_gui_command  = "obsidian://open?vault={vault}&file={file}"
 backup_remote     = "origin"
 share_port        = 7478
 share_allow_lan   = false                                         # loopback by default; opt into LAN
+
+# [keymap] overrides the editor's baked keybindings — see "Keymap" below.
+# A malformed spec or unknown action is skipped (with a warning), so a typo
+# can't brick the editor: the default binding survives.
+[keymap]
+"ctrl+x" = "cut"              # rebind cut
 ```
 
 | Key                 | Meaning                                                                  |
@@ -190,6 +256,62 @@ share_allow_lan   = false                                         # loopback by 
 | `backup_remote`     | Git remote used by `onote backup`                                        |
 | `share_port`        | Port the read-only share server listens on                               |
 | `share_allow_lan`   | `false` = loopback only; `true` = bind LAN                               |
+| `keymap`            | `[keymap]` table of `"key-spec" = "action"` overrides (see below)        |
+
+### Keymap
+
+The `[keymap]` table remaps any editor binding. Each entry is a
+`"key-spec" = "action-name"` pair, overlaid on the baked defaults:
+
+```toml
+[keymap]
+"ctrl+s"         = "save"          # leave save where it is (or move it)
+"ctrl+shift+c"   = "copy"          # copy the selection
+"ctrl+x"         = "cut"           # cut the selection
+"ctrl+a"         = "select_all"
+"ctrl+left"      = "word_left"
+"shift+left"     = "select_left"
+```
+
+**Key-spec syntax** — a `+`-joined combo:
+
+- **Modifiers:** `ctrl` (or `control`), `alt` (or `option`, `meta`), `shift`.
+- **Key name:** `enter` / `return`, `tab`, `backspace` / `bs`, `esc` /
+  `escape`, `delete` / `del`, `insert` / `ins`, `home`, `end`,
+  `pageup` / `pgup`, `pagedown` / `pgdn`, `left` `right` `up` `down`,
+  `space` / `spacebar`, `f1`…`f12`, or a single literal character (e.g. `"s"`).
+- Letter keys are case-insensitive: `"ctrl+S"` ≡ `"ctrl+s"`.
+
+**Action names** (the full vocabulary; aliases after `/`):
+
+| Action                          | Default binding       |
+| ------------------------------- | --------------------- |
+| `quit`                          | `Ctrl+Q`, `Ctrl+C`    |
+| `save`                          | `Ctrl+S`              |
+| `reload`                        | `Ctrl+R`              |
+| `open_fuzzy` / `open`           | `Ctrl+O`              |
+| `paste_image` / `paste`         | `Ctrl+P`              |
+| `delete_image_token` / `delete_image` | `Ctrl+D`        |
+| `conflict_copy`                 | `Ctrl+K`              |
+| `enter` / `newline`             | `Enter`               |
+| `tab`                           | `Tab`                 |
+| `backspace`                     | `Backspace`           |
+| `delete_forward` / `delete`     | `Delete`              |
+| `move_left` `move_right` `move_up` `move_down` | `←` `→` `↑` `↓` |
+| `move_home` / `home`            | `Home`                |
+| `move_end` / `end`              | `End`                 |
+| `select_left` `select_right` `select_up` `select_down` | `Shift+←/→/↑/↓` |
+| `select_home` `select_end`    | `Shift+Home`, `Shift+End` |
+| `select_all`                    | `Ctrl+A`              |
+| `select_word_left` / `select_word_right` | `Ctrl+Shift+←` / `Ctrl+Shift+→` |
+| `word_left` / `word_right`      | `Ctrl+←` / `Ctrl+→`   |
+| `copy`                          | `Ctrl+Shift+C`        |
+| `cut`                           | `Ctrl+X`              |
+| `clear_selection` / `deselect`  | `Esc`                 |
+
+A spec that fails to parse, or an unknown action, is logged and **skipped** —
+the default binding for that key stays intact, so a typo can never leave you
+without a working editor.
 
 ## Architecture
 

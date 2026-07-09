@@ -55,7 +55,7 @@ Cross-platform release: Windows joins macOS and Linux as a first-class target.
   (`brew tap alansynn/tap && brew install onote`) so the tap can host formulae
   for more than just onote.
 - **Scoop bucket** (`alansynn/scoop-onote`) for Windows: `scoop bucket add
-  alansynn/onote && scoop install onote`.
+  alansynn/scoop-onote && scoop install onote`.
 
 ### Changed
 
