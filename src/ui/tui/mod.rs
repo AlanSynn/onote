@@ -11,8 +11,9 @@
 //! (grapheme-accurate), Ctrl+A selects all, mouse drag selects, Ctrl+Shift+C
 //! copies and Ctrl+X cuts the selection, and Ctrl+Left/Right jump by word
 //! (Ctrl+Shift+Left/Right extend by word). Typing/Backspace/Delete over a
-//! selection replaces it. All bindings are remappable via the `[keymap]` config
-//! table (`CLAUDE.md` §5 KeymapRegistry).
+//! selection replaces it. All editor (edit-mode) bindings are remappable via
+//! the `[keymap]` config table (`CLAUDE.md` §5 KeymapRegistry); the fuzzy
+//! picker and image-preview modal keys are fixed (not in the registry).
 //!
 //! External edits (Obsidian, another terminal, `git pull`) are detected via the
 //! file watcher (§2.5/§7): the status flips to "changed externally" so the user
@@ -793,8 +794,8 @@ impl EditorState {
     }
 
     /// Select the entire buffer (Ctrl+A). Anchor at (0,0); head (= caret) at the
-    /// last char of the last line, grapheme-snapped. Empty buffer → empty
-    /// selection (renders as nothing, per C5).
+    /// END of the last line (EOL, one past the last char), grapheme-snapped.
+    /// Empty buffer → empty selection (renders as nothing, per C5).
     fn select_all(&mut self) {
         let last = self.lines.len().saturating_sub(1);
         let last_len = self.lines.get(last).map_or(0, |l| char_count(l.as_str()));
@@ -859,11 +860,20 @@ impl EditorState {
         if start == end {
             return;
         }
-        let last = self.lines.len().saturating_sub(1);
-        start.line = start.line.min(last);
-        end.line = end.line.min(last);
-        start.col = start.col.min(char_count(&self.lines[start.line]));
-        end.col = end.col.min(char_count(&self.lines[end.line]));
+        // Defense-in-depth: callers pass a live selection (already in-bounds),
+        // but clamp both endpoints to the buffer so a stale/oversized `Pos`
+        // (e.g. from a config path) can never index out of range. Clamping can
+        // collapse both onto the last line with start.col > end.col, so
+        // re-normalize after — otherwise the single-line branch would build a
+        // reversed `b0..b1` and panic in `replace_range`.
+        let mut start = self.clamp_pos(start);
+        let mut end = self.clamp_pos(end);
+        if start > end {
+            std::mem::swap(&mut start, &mut end);
+        }
+        if start == end {
+            return;
+        }
 
         if start.line == end.line {
             let line = &mut self.lines[start.line];
@@ -894,27 +904,35 @@ impl EditorState {
     fn selected_text(&self) -> Option<String> {
         let sel = self.selection()?;
         let (start, end) = sel.normalized();
-        let last = self.lines.len().saturating_sub(1);
-        let s_line = start.line.min(last);
-        let e_line = end.line.min(last);
-        let s_col = start.col.min(char_count(&self.lines[s_line]));
-        let e_col = end.col.min(char_count(&self.lines[e_line]));
+        let start = self.clamp_pos(start);
+        let end = self.clamp_pos(end);
         let mut out = String::new();
-        if s_line == e_line {
-            let line = &self.lines[s_line];
-            out.push_str(&line[char_to_byte(line, s_col)..char_to_byte(line, e_col)]);
+        if start.line == end.line {
+            let line = &self.lines[start.line];
+            out.push_str(&line[char_to_byte(line, start.col)..char_to_byte(line, end.col)]);
         } else {
-            let s = &self.lines[s_line];
-            out.push_str(&s[char_to_byte(s, s_col)..]);
-            for ln in (s_line + 1)..e_line {
+            let s = &self.lines[start.line];
+            out.push_str(&s[char_to_byte(s, start.col)..]);
+            for ln in (start.line + 1)..end.line {
                 out.push('\n');
                 out.push_str(&self.lines[ln]);
             }
             out.push('\n');
-            let e = &self.lines[e_line];
-            out.push_str(&e[..char_to_byte(e, e_col)]);
+            let e = &self.lines[end.line];
+            out.push_str(&e[..char_to_byte(e, end.col)]);
         }
         Some(out)
+    }
+
+    /// Clamp a [`Pos`] into the live buffer: line to `[0, lines.len()-1]`, col to
+    /// `[0, char_count(line)]`. Centralized here (CLAUDE.md §5) so `delete_range`
+    /// and `selected_text` can't drift on the bound. `lines` is never empty (the
+    /// constructor seeds `vec![String::new()]`), so indexing `[0]` is safe.
+    fn clamp_pos(&self, p: Pos) -> Pos {
+        let last = self.lines.len().saturating_sub(1);
+        let line = p.line.min(last);
+        let col = p.col.min(char_count(&self.lines[line]));
+        Pos { line, col }
     }
 
     /// Forward-delete (Delete key) with NO selection: remove the char after the
@@ -1193,6 +1211,18 @@ fn dispatch_edit(app: &App, state: &mut EditorState, action: Action) -> Result<C
         Action::DeleteImageToken => delete_image_token(app, state),
         // Enter on an image line opens the preview modal; otherwise newline.
         Action::Enter => {
+            // C6/C5: with a selection, Enter replaces it with the newline (then
+            // clears the anchor) — type-over-replace parity. Done BEFORE the
+            // image-overlay probe so a selection on an image line still replaces
+            // rather than opening the preview. Enter is dispatched here (not via
+            // `apply_action`'s C6 catch-all) because the overlay probe is
+            // App-dependent, so the centralized guard can't see it.
+            if let Some(sel) = state.selection() {
+                let (start, end) = sel.normalized();
+                state.delete_range(start, end);
+                state.insert_newline();
+                return Ok(Control::Continue);
+            }
             if !try_open_image_overlay(app, state)? {
                 state.insert_newline();
             }
@@ -3583,5 +3613,93 @@ mod tests {
         s.apply_action(Action::WordRight);
         assert_eq!(s.cy, 1, "wrapped to next line");
         assert_eq!(s.cx, 0, "at col 0 of line 1");
+    }
+
+    // ── Validation fixes (code-review #1/#4, architect #2) ────────────────
+
+    /// MAJOR (code-review #1): Enter replaces an active selection (C6/C5). Enter
+    /// is dispatched in `dispatch_edit` (the image-overlay probe needs App), so
+    /// it can't go through `apply_action`'s centralized C6 guard — the replace
+    /// is handled in the Enter arm itself. Simulate that arm's selection branch.
+    #[test]
+    fn enter_replaces_selection_then_clears_it() {
+        let mut s = select_line_range("hello", 1, 3); // select "el", caret col 3
+                                                      // Mirror dispatch_edit's Enter arm: delete the range, then newline.
+        let (start, end) = s.selection().unwrap().normalized();
+        s.delete_range(start, end);
+        s.insert_newline();
+        // "el" gone → "hlo", then the newline splits after the caret (col 1).
+        assert_eq!(s.body(), "h\nlo", "selection replaced by a newline");
+        assert!(s.selection().is_none(), "selection cleared");
+    }
+
+    /// full-buffer delete (plan §5 "full" case, code-review #4): selecting the
+    /// whole note and deleting empties the buffer to a single empty line without
+    /// panicking (the clamp + re-normalize path on a whole-buffer range).
+    #[test]
+    fn delete_range_full_buffer_empties_to_single_line() {
+        let mut s = state_from_body("ab\ncd\nef");
+        s.apply_action(Action::SelectAll);
+        let (start, end) = s.selection().unwrap().normalized();
+        s.delete_range(start, end);
+        assert_eq!(s.body(), "", "whole buffer deleted");
+        assert_eq!(s.lines.len(), 1, "buffer is one empty line, never zero");
+        assert_eq!(s.cx, 0);
+        assert_eq!(s.cy, 0);
+    }
+
+    /// delete_range's clamp is defense-in-depth: an out-of-range `Pos` must
+    /// never panic and must re-normalize so the single-line branch never sees a
+    /// reversed range. Drives the post-clamp `swap` added for code-review #2.
+    #[test]
+    fn delete_range_clamps_oversized_positions_without_panic() {
+        let mut s = state_from_body("hi"); // chars: 'h'(0) 'i'(1)
+                                           // Both endpoints far out of range: clamp + re-normalize must land on
+                                           // `[col1, col2)` of line 0 without panic and without a reversed slice.
+                                           // start{5,99} > end{0,1} initially → swapped to {0,1}..{0,2} post-clamp.
+        let start = Pos { line: 5, col: 99 };
+        let end = Pos { line: 0, col: 1 };
+        s.delete_range(start, end); // must not panic
+                                    // Deletes char index 1 ('i') → leaves 'h'.
+        assert_eq!(s.body(), "h");
+    }
+
+    /// Cross-module config→keymap wire (architect #2): the live line in `run()`
+    /// is `state.keymap = KeymapRegistry::from_config(&app.config().keymap)`.
+    /// Pin the transform run() depends on end-to-end: a TOML `[keymap]` parses
+    /// (config.rs) into `Config.keymap`, which `from_config` (tui) turns into
+    /// typed overrides layered on the baked defaults. A regression that drops
+    /// the wire, renames the field, or stops honoring overrides breaks this.
+    #[test]
+    fn keymap_override_flows_from_config_to_registry() {
+        use crate::config::Config;
+        use std::io::Write;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut f = tmp.reopen().unwrap();
+        // Cross-platform absolute vault (config.rs rejects relative/non-absolute
+        // on the host): backslash-doubling keeps it a valid TOML basic string.
+        let vault = std::env::temp_dir()
+            .join("onote-keymap-wire-test")
+            .to_string_lossy()
+            .replace('\\', "\\\\");
+        writeln!(
+            f,
+            r#"
+vault = "{vault}"
+[keymap]
+"ctrl+s" = "reload"
+"ctrl+x" = "cut"
+"#
+        )
+        .unwrap();
+        let cfg = Config::load_from(Some(tmp.path())).unwrap();
+        let km = KeymapRegistry::from_config(&cfg.keymap);
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        // User override wins over the baked default (Ctrl+S was `save`).
+        assert_eq!(km.action_for(&ctrl('s')), Some(Action::Reload));
+        // A new binding (Ctrl+X = cut, not in the default map) takes effect.
+        assert_eq!(km.action_for(&ctrl('x')), Some(Action::Cut));
+        // Untouched defaults survive (overrides layer, not replace).
+        assert_eq!(km.action_for(&ctrl('q')), Some(Action::Quit));
     }
 }
