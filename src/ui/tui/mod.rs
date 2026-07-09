@@ -7,6 +7,13 @@
 //! writes a conflict copy, Ctrl+Q quits. Enter over an image line opens the
 //! full-screen preview modal (§2.4); mouse wheel scrolls the viewport.
 //!
+//! Text selection (block-select interaction): Shift+arrows extend a selection
+//! (grapheme-accurate), Ctrl+A selects all, mouse drag selects, Ctrl+Shift+C
+//! copies and Ctrl+X cuts the selection, and Ctrl+Left/Right jump by word
+//! (Ctrl+Shift+Left/Right extend by word). Typing/Backspace/Delete over a
+//! selection replaces it. All bindings are remappable via the `[keymap]` config
+//! table (`CLAUDE.md` §5 KeymapRegistry).
+//!
 //! External edits (Obsidian, another terminal, `git pull`) are detected via the
 //! file watcher (§2.5/§7): the status flips to "changed externally" so the user
 //! reloads rather than silently clobbering disk.
@@ -797,6 +804,47 @@ impl EditorState {
         self.snap_head_to_grapheme();
     }
 
+    /// Jump the caret one word in `dir` (Ctrl+Left/Right), with the same
+    /// line-wrap behavior as a plain Left/Right: at a line edge, cross to the
+    /// previous/next line's end/start rather than stalling. The word jump on a
+    /// single line is delegated to the pure [`word_boundary`]. Does NOT touch
+    /// the selection — callers clear/extend as needed (plain word-move clears,
+    /// select-word-move extends).
+    fn move_word(&mut self, dir: WordDir) {
+        let len = char_count(self.cur_line());
+        match dir {
+            WordDir::Left => {
+                if self.cx == 0 {
+                    if self.cy > 0 {
+                        self.cy -= 1;
+                        self.cx = char_count(self.cur_line());
+                    }
+                } else {
+                    self.cx = word_boundary(self.cur_line(), self.cx, WordDir::Left);
+                }
+            }
+            WordDir::Right => {
+                if self.cx >= len {
+                    if self.cy + 1 < self.lines.len() {
+                        self.cy += 1;
+                        self.cx = 0;
+                    }
+                } else {
+                    self.cx = word_boundary(self.cur_line(), self.cx, WordDir::Right);
+                }
+            }
+        }
+    }
+
+    /// Extend the selection head one word in `dir` (Ctrl+Shift+Left/Right):
+    /// ensure an anchor, move the caret by word, then grapheme-snap the landing
+    /// (C7). The anchor is untouched, so the selection extends by a whole word.
+    fn extend_word(&mut self, dir: WordDir) {
+        self.ensure_selection();
+        self.move_word(dir);
+        self.snap_head_to_grapheme();
+    }
+
     /// Delete the half-open char range `[start, end)` (document order; swapped
     /// if reversed). Single-line splices one line; multi-line drops the covered
     /// lines and joins the end-line tail onto the start line. Every slice goes
@@ -962,8 +1010,19 @@ impl EditorState {
             Action::SelectEnd => self.extend_selection(KeyCode::End),
             Action::SelectAll => self.select_all(),
             Action::ClearSelection => self.clear_selection(),
-            // Copy/Cut are App-dependent → handled in dispatch_edit. Word-motion
-            // lands in P5. Listing them via `_` keeps this match exhaustive.
+            // P5 word-motion: plain word-jump clears the selection first (C5);
+            // select-word extends the head by one word (C7 grapheme-snap on land).
+            Action::WordLeft => {
+                self.clear_selection();
+                self.move_word(WordDir::Left);
+            }
+            Action::WordRight => {
+                self.clear_selection();
+                self.move_word(WordDir::Right);
+            }
+            Action::SelectWordLeft => self.extend_word(WordDir::Left),
+            Action::SelectWordRight => self.extend_word(WordDir::Right),
+            // Copy/Cut are App-dependent → handled in dispatch_edit.
             _ => {}
         }
     }
@@ -1120,6 +1179,8 @@ fn dispatch_edit(app: &App, state: &mut EditorState, action: Action) -> Result<C
     match action {
         Action::Save => save(app, state),
         Action::OpenFuzzy => {
+            // Leaving the editor surface → drop the selection (C5 lifecycle).
+            state.clear_selection();
             state.mode = Mode::FuzzyOpen;
             state.fuzzy_query.clear();
             refresh_fuzzy(app, state)?;
@@ -1671,8 +1732,16 @@ fn render_status(state: &EditorState, frame: &mut Frame, area: Rect) {
     // than the misleading "Enter=image". Esc is intentionally NOT a quit key
     // (see `handle_edit_event`), so it's omitted. `^K` shows contextually in
     // the CONFLICT status label. Wheel scroll is implied for a terminal mouse.
-    let hint =
-        " ^S save · ^O open · ^P paste · ^D del-img · ^R reload · Enter newline/image · ^Q quit";
+    //
+    // When a selection is active, swap in a compact selection hint so the
+    // copy/cut/replace keys are discoverable exactly when they matter (the
+    // full hint is too long for narrow terminals; the contextual swap is the
+    // width-aware compromise). Ctrl+C stays "quit", so copy is ^Shift+C.
+    let hint = if state.selection().is_some() {
+        " selection: ^Shift+C copy · ^X cut · type=replace · Esc clear"
+    } else {
+        " ^S save · ^O open · ^P paste · ^D del-img · ^R reload · Enter newline/image · ^Q quit"
+    };
     let line = Line::from(vec![
         Span::styled(
             format!(" {} ", state.status.label()),
@@ -1843,6 +1912,82 @@ fn snap_to_grapheme_start(line: &str, char_idx: usize) -> usize {
         cursor += len;
     }
     target
+}
+
+/// Direction for [`word_boundary`] / `move_word` (plan P5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WordDir {
+    Left,
+    Right,
+}
+
+/// Classification used by [`word_boundary`] to group runs. Whitespace, word
+/// chars (alphanumeric + `_`), and punctuation are three distinct runs so
+/// `foo, bar` has four boundaries: `foo` | `,` | (space) | `bar` — matching the
+/// Ctrl+Left/Right "jump one word-or-token" feel users expect.
+#[derive(PartialEq, Eq)]
+enum WordClass {
+    Whitespace,
+    Word,
+    Punct,
+}
+
+fn word_class(c: char) -> WordClass {
+    if c.is_whitespace() {
+        WordClass::Whitespace
+    } else if c.is_alphanumeric() || c == '_' {
+        WordClass::Word
+    } else {
+        WordClass::Punct
+    }
+}
+
+/// Pure word-boundary finder for P5 word-motion. Returns the char index of the
+/// next/previous word boundary on a SINGLE line (the caller handles line-wrap).
+/// Symmetric:
+/// - Right: skip the run under `from` (ws/word/punct), then skip any trailing
+///   whitespace so the caret lands at the START of the next token (or EOL).
+/// - Left: skip the whitespace before `from`, then skip one run, landing at the
+///   START of the previous token (or col 0).
+///
+/// `from` is clamped to `[0, char_count(line)]`.
+fn word_boundary(line: &str, from: usize, dir: WordDir) -> usize {
+    let chars: Vec<char> = line.chars().collect();
+    let n = chars.len();
+    let from = from.min(n);
+    match dir {
+        WordDir::Right => {
+            if from >= n {
+                return n;
+            }
+            let mut i = from;
+            let start = word_class(chars[i]);
+            while i < n && word_class(chars[i]) == start {
+                i += 1;
+            }
+            while i < n && matches!(word_class(chars[i]), WordClass::Whitespace) {
+                i += 1;
+            }
+            i
+        }
+        WordDir::Left => {
+            if from == 0 {
+                return 0;
+            }
+            let mut i = from;
+            while i > 0 && matches!(word_class(chars[i - 1]), WordClass::Whitespace) {
+                i -= 1;
+            }
+            if i == 0 {
+                return 0;
+            }
+            let target = word_class(chars[i - 1]);
+            while i > 0 && word_class(chars[i - 1]) == target {
+                i -= 1;
+            }
+            i
+        }
+    }
 }
 
 /// Inline image-glyph render (`CLAUDE.md` §2.4 "editor surface"): each embed
@@ -3331,5 +3476,112 @@ mod tests {
             "cut failed: ClipBoom",
             "failure rendered via Display into the toast"
         );
+    }
+
+    // ── Word-motion + extend (P5, plan §4 Phase 5) ────────────────────────
+
+    /// Pure word-boundary: right-jump lands at the start of the next token,
+    /// skipping the current run + trailing whitespace.
+    #[test]
+    fn word_boundary_right_lands_at_next_token_start() {
+        let line = "foo bar baz";
+        // 0:f 1:o 2:o 3:space 4:b 5:a 6:r 7:space 8:b 9:a 10:z
+        assert_eq!(word_boundary(line, 0, WordDir::Right), 4, "foo → bar");
+        assert_eq!(word_boundary(line, 2, WordDir::Right), 4, "mid-foo → bar");
+        assert_eq!(word_boundary(line, 4, WordDir::Right), 8, "bar → baz");
+        assert_eq!(word_boundary(line, 8, WordDir::Right), 11, "baz → EOL");
+        assert_eq!(word_boundary(line, 11, WordDir::Right), 11, "at EOL stays");
+        // On a space, the space is its own run → skip to next token start.
+        assert_eq!(word_boundary(line, 3, WordDir::Right), 4, "space → bar");
+    }
+
+    /// Punctuation is its own run, so `foo, bar` has a boundary at the comma.
+    #[test]
+    fn word_boundary_right_treats_punctuation_as_own_run() {
+        let line = "foo, bar";
+        // 0:f 1:o 2:o 3:, 4:space 5:b 6:a 7:r
+        assert_eq!(word_boundary(line, 0, WordDir::Right), 3, "foo → comma");
+        assert_eq!(word_boundary(line, 3, WordDir::Right), 5, "comma → bar");
+    }
+
+    /// Symmetric left-jump lands at the start of the previous token.
+    #[test]
+    fn word_boundary_left_lands_at_prev_token_start() {
+        let line = "foo bar baz";
+        assert_eq!(word_boundary(line, 11, WordDir::Left), 8, "EOL → baz start");
+        assert_eq!(word_boundary(line, 8, WordDir::Left), 4, "baz → bar start");
+        assert_eq!(word_boundary(line, 4, WordDir::Left), 0, "bar → foo start");
+        assert_eq!(word_boundary(line, 0, WordDir::Left), 0, "col 0 stays");
+    }
+
+    /// CJK: each char is alphanumeric (a word run), so a jump moves over the
+    /// whole run at once — no byte/char mismatch because indices stay char-based.
+    #[test]
+    fn word_boundary_handles_cjk_word_run() {
+        let line = "你好 world"; // 0:你 1:好 2:space 3:w 4:o 5:r 6:l 7:d
+        assert_eq!(word_boundary(line, 0, WordDir::Right), 3, "CJK run → world");
+        assert_eq!(word_boundary(line, 3, WordDir::Right), 8, "world → EOL");
+        assert_eq!(
+            word_boundary(line, 8, WordDir::Left),
+            3,
+            "EOL → world start"
+        );
+        assert_eq!(
+            word_boundary(line, 3, WordDir::Left),
+            0,
+            "world → CJK start"
+        );
+    }
+
+    /// Ctrl+Right moves the caret by word AND clears the selection (C5).
+    #[test]
+    fn word_right_moves_caret_and_clears_selection() {
+        let mut s = select_line_range("foo bar", 0, 2); // select "fo", caret at col 2
+        s.apply_action(Action::WordRight);
+        assert_eq!(s.cx, 4, "caret jumped to start of `bar`");
+        assert!(s.selection().is_none(), "plain word-move clears selection");
+    }
+
+    /// Ctrl+Left moves the caret left by word and clears the selection.
+    #[test]
+    fn word_left_moves_caret_and_clears_selection() {
+        let mut s = select_line_range("foo bar", 4, 6); // select "ba", caret at col 6
+        s.apply_action(Action::WordLeft);
+        assert_eq!(s.cx, 4, "caret jumped to start of `bar`");
+        assert!(s.selection().is_none());
+    }
+
+    /// Ctrl+Shift+Right extends the selection by a whole word (anchor fixed).
+    #[test]
+    fn select_word_right_extends_head_by_word() {
+        let mut s = state_from_body("foo bar baz");
+        s.cx = 0;
+        s.apply_action(Action::SelectWordRight); // extend 0 → 4
+        assert_eq!(s.cx, 4, "head moved to start of `bar`");
+        let sel = s.selection().expect("selection active");
+        assert_eq!(sel.normalized().0.col, 0, "anchor stayed at 0");
+        assert_eq!(sel.normalized().1.col, 4, "head at 4");
+        assert_eq!(s.selected_text().as_deref(), Some("foo "));
+    }
+
+    /// Ctrl+Shift+Left extends the selection leftward by a word.
+    #[test]
+    fn select_word_left_extends_head_by_word() {
+        let mut s = state_from_body("foo bar baz");
+        s.cx = 8; // start of `baz`
+        s.apply_action(Action::SelectWordLeft); // 8 → 4
+        assert_eq!(s.cx, 4, "head moved to start of `bar`");
+        // anchor at 8, head at 4 → normalized [4, 8) = "bar "
+        assert_eq!(s.selected_text().as_deref(), Some("bar "));
+    }
+
+    /// Word-motion crosses line edges the same way Left/Right do.
+    #[test]
+    fn word_right_at_eol_wraps_to_next_line() {
+        let mut s = state_from_body("foo\nbar"); // line0 "foo", line1 "bar"
+        s.cx = 3; // at EOL of line 0
+        s.apply_action(Action::WordRight);
+        assert_eq!(s.cy, 1, "wrapped to next line");
+        assert_eq!(s.cx, 0, "at col 0 of line 1");
     }
 }
