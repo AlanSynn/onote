@@ -904,8 +904,14 @@ impl EditorState {
     fn selected_text(&self) -> Option<String> {
         let sel = self.selection()?;
         let (start, end) = sel.normalized();
-        let start = self.clamp_pos(start);
-        let end = self.clamp_pos(end);
+        // Clamp + re-normalize for parity with `delete_range` (defense-in-depth:
+        // a post-clamp collapse onto the last line could otherwise reverse the
+        // range and panic the slice below). For reachable inputs the clamp is a
+        // no-op — anchor/caret are kept in-bounds by every insert/delete.
+        let (mut start, mut end) = (self.clamp_pos(start), self.clamp_pos(end));
+        if start > end {
+            std::mem::swap(&mut start, &mut end);
+        }
         let mut out = String::new();
         if start.line == end.line {
             let line = &self.lines[start.line];
