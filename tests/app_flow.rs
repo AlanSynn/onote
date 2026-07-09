@@ -155,6 +155,7 @@ fn build_app_with_clipboard(dir: &std::path::Path, clipboard: Arc<dyn Clipboard>
         backup_remote: "origin".into(),
         share_port: 7478,
         share_allow_lan: false,
+        keymap: Default::default(),
     };
     let index_db = dir.join(".onote").join("index.sqlite");
     std::fs::create_dir_all(dir.join(".onote")).unwrap();

@@ -4,6 +4,7 @@
 //! `directories`. Falls back to sensible defaults so bare `onote` works against a
 //! default vault.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,12 @@ pub struct Config {
     /// Default `false` (loopback) — opting into LAN exposure must be explicit.
     #[serde(default)]
     pub share_allow_lan: bool,
+    /// User-overridable TUI keybindings (`[keymap]`), overlaid on the editor's
+    /// baked defaults. Stored as opaque `"key-spec" = "action-name"` strings
+    /// (config must not know `KeyCode`/TUI types — `CLAUDE.md` §1.3); the TUI
+    /// layer parses them. See [`KeymapConfig`].
+    #[serde(default)]
+    pub keymap: KeymapConfig,
 }
 
 fn default_note() -> String {
@@ -57,6 +64,34 @@ fn default_backup_remote() -> String {
 }
 fn default_share_port() -> u16 {
     7478
+}
+
+/// User-overridable keybindings (`[keymap]` in config.toml), overlaid on the
+/// TUI editor's baked defaults (`CLAUDE.md` §5 KeymapRegistry).
+///
+/// Each entry is `"key-spec" = "action-name"`:
+///
+/// ```toml
+/// [keymap]
+/// "ctrl+s" = "save"            # rebind save (or leave at default)
+/// "ctrl+shift+c" = "copy"      # copy selection
+/// "ctrl+x" = "cut"             # cut selection
+/// "ctrl+a" = "select_all"
+/// ```
+///
+/// Stored as opaque strings here — config deliberately knows nothing about
+/// `KeyCode` or TUI types (`CLAUDE.md` §1.3). The `ui::tui::KeymapRegistry`
+/// parses each `"spec" = "action"` into a typed binding at startup. A malformed
+/// spec or unknown action is skipped (with a warning), leaving the default
+/// binding intact, so a typo can't brick the editor. A `BTreeMap` (not
+/// `HashMap`) gives deterministic ordering and last-write-wins on duplicate
+/// key-specs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeymapConfig {
+    /// `#[serde(flatten)]` so a user writes `[keymap]` with `"ctrl+s" = "save"`
+    /// pairs DIRECTLY (not nested under a `bindings =` sub-table).
+    #[serde(flatten)]
+    pub bindings: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -108,6 +143,7 @@ impl Config {
             backup_remote: default_backup_remote(),
             share_port: default_share_port(),
             share_allow_lan: false,
+            keymap: KeymapConfig::default(),
         }
     }
 
@@ -142,6 +178,8 @@ struct ConfigFile {
     share_port: u16,
     #[serde(default)]
     share_allow_lan: bool,
+    #[serde(default)]
+    keymap: KeymapConfig,
 }
 
 impl ConfigFile {
@@ -192,6 +230,7 @@ impl ConfigFile {
             backup_remote: self.backup_remote,
             share_port: self.share_port,
             share_allow_lan: self.share_allow_lan,
+            keymap: self.keymap,
         })
     }
 }
@@ -237,6 +276,40 @@ share_allow_lan = true
         assert_eq!(cfg.image_link_style, LinkStyle::Obsidian);
         assert_eq!(cfg.share_port, 8000);
         assert!(cfg.share_allow_lan);
+    }
+
+    /// `[keymap]` entries parse into the opaque string map; the TUI layer (not
+    /// config) interprets them. A missing `[keymap]` yields an empty map (the
+    /// TUI applies its baked defaults).
+    #[test]
+    fn keymap_section_parses_into_string_map() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut f = tmp.reopen().unwrap();
+        let vault = abs_vault_toml();
+        writeln!(
+            f,
+            r#"
+vault = "{vault}"
+[keymap]
+"ctrl+s" = "reload"
+"ctrl+x" = "cut"
+"ctrl+shift+c" = "copy"
+"#
+        )
+        .unwrap();
+        let cfg = Config::load_from(Some(tmp.path())).unwrap();
+        assert_eq!(
+            cfg.keymap.bindings.get("ctrl+s").map(String::as_str),
+            Some("reload")
+        );
+        assert_eq!(
+            cfg.keymap.bindings.get("ctrl+x").map(String::as_str),
+            Some("cut")
+        );
+        assert_eq!(
+            cfg.keymap.bindings.get("ctrl+shift+c").map(String::as_str),
+            Some("copy")
+        );
     }
 
     #[test]
