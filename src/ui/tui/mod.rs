@@ -631,6 +631,13 @@ impl EditorState {
     }
 
     fn insert_char(&mut self, c: char) {
+        // B1 defense-in-depth: any raw buffer mutation invalidates a
+        // selection anchor. C6 (apply_action) deletes an ACTIVE selection
+        // first; this closes the LATENT case (anchor == caret, e.g. after a
+        // pure mouse click) so the anchor can't survive into a state where
+        // the caret has drifted off it and a later keystroke would treat the
+        // stale gap as a selection (silent data loss on the next type).
+        self.clear_selection();
         if let Some(line) = self.lines.get_mut(self.cy) {
             // cx is a CHAR index; clamp + translate to a byte boundary before
             // mutating so multibyte sequences (CJK, emoji) never split a code
@@ -644,6 +651,10 @@ impl EditorState {
     }
 
     fn insert_newline(&mut self) {
+        // B1 defense-in-depth: see `insert_char` — a buffer mutation drops any
+        // latent/active selection anchor (the Enter arm in dispatch_edit deletes
+        // an active selection first; this covers the latent + direct-call cases).
+        self.clear_selection();
         if self.cy >= self.lines.len() {
             return;
         }
@@ -658,6 +669,9 @@ impl EditorState {
     }
 
     fn backspace(&mut self) {
+        // B1 defense-in-depth: see `insert_char` — drops a latent/active anchor
+        // (C6 deletes an active selection first; this covers the rest).
+        self.clear_selection();
         if self.cx == 0 {
             if self.cy > 0 {
                 // Merge into the previous line; cursor lands at its end (char count).
@@ -811,6 +825,13 @@ impl EditorState {
     /// single line is delegated to the pure [`word_boundary`]. Does NOT touch
     /// the selection — callers clear/extend as needed (plain word-move clears,
     /// select-word-move extends).
+    ///
+    /// The landing is grapheme-snapped (B4): [`word_class`] treats a combining
+    /// mark (e.g. U+0301) as `Punct`, so a base+combining grapheme like `é`
+    /// splits into two runs and `word_boundary` can return an index INSIDE the
+    /// grapheme. `snap_grapheme_dir` advances (Right) or retracts (Left) to the
+    /// nearest grapheme boundary so the caret never lands mid-cluster. Line-edge
+    /// wraps land on col 0 / EOL, which are always boundaries, so they're safe.
     fn move_word(&mut self, dir: WordDir) {
         let len = char_count(self.cur_line());
         match dir {
@@ -821,7 +842,9 @@ impl EditorState {
                         self.cx = char_count(self.cur_line());
                     }
                 } else {
-                    self.cx = word_boundary(self.cur_line(), self.cx, WordDir::Left);
+                    let line = self.cur_line().to_string();
+                    let raw = word_boundary(&line, self.cx, WordDir::Left);
+                    self.cx = snap_grapheme_dir(&line, raw, WordDir::Left);
                 }
             }
             WordDir::Right => {
@@ -831,7 +854,9 @@ impl EditorState {
                         self.cx = 0;
                     }
                 } else {
-                    self.cx = word_boundary(self.cur_line(), self.cx, WordDir::Right);
+                    let line = self.cur_line().to_string();
+                    let raw = word_boundary(&line, self.cx, WordDir::Right);
+                    self.cx = snap_grapheme_dir(&line, raw, WordDir::Right);
                 }
             }
         }
@@ -945,6 +970,8 @@ impl EditorState {
     /// caret, or join the next line up when at EOL. The caret stays put. (A
     /// selection is handled by the C6 replace-on-type guard before this runs.)
     fn delete_forward(&mut self) {
+        // B1 defense-in-depth: see `insert_char` — drops a latent/active anchor.
+        self.clear_selection();
         let len = char_count(self.cur_line());
         if self.cx < len {
             if let Some(line) = self.lines.get_mut(self.cy) {
@@ -1036,6 +1063,7 @@ impl EditorState {
             Action::ClearSelection => self.clear_selection(),
             // P5 word-motion: plain word-jump clears the selection first (C5);
             // select-word extends the head by one word (C7 grapheme-snap on land).
+            // move_word itself grapheme-snaps the landing (B4) — see its body.
             Action::WordLeft => {
                 self.clear_selection();
                 self.move_word(WordDir::Left);
@@ -1432,6 +1460,10 @@ fn decode_limits() -> image::Limits {
 /// first occurrence is removed. (File deletion is intentionally NOT done here —
 /// `CLAUDE.md` §3.1 makes it optional and gated on `is_referenced_elsewhere`.)
 fn delete_image_token(app: &App, state: &mut EditorState) -> Result<Control> {
+    // B3: deleting an image token mutates the line + caret but bypasses
+    // apply_action's C6 guard (it's an App-dependent command). Drop any
+    // selection so its anchor can't go stale against the shortened line.
+    state.clear_selection();
     let line = state.cur_line().to_string();
     let Some(rf) = app.attachment_links(&line).into_iter().next() else {
         state.toast("no image token on this line");
@@ -1642,6 +1674,16 @@ fn conflict_copy(app: &App, state: &mut EditorState) -> Result<Control> {
 fn paste_image(app: &App, state: &mut EditorState) -> Result<Control> {
     match app.paste_image()? {
         Some(pasted) => {
+            // B2 (C6 parity): paste_image calls insert_char directly (bypassing
+            // apply_action's centralized replace-on-type guard), so an ACTIVE
+            // selection must be deleted here first — otherwise the token is
+            // inserted at the caret with the selection untouched, and the next
+            // keystroke would C6-delete the stale range. The latent-anchor case
+            // is handled by insert_char itself (B1).
+            if let Some(sel) = state.selection() {
+                let (s, e) = sel.normalized();
+                state.delete_range(s, e);
+            }
             for ch in format!("{} ", pasted.token).chars() {
                 state.insert_char(ch);
             }
@@ -2023,6 +2065,37 @@ fn word_boundary(line: &str, from: usize, dir: WordDir) -> usize {
             }
             i
         }
+    }
+}
+
+/// Snap a char index to a grapheme boundary, moving in `dir` if it lands
+/// mid-cluster (B4). A combining mark makes `word_boundary` return an index
+/// INSIDE a grapheme (e.g. `é` = e + U+0301); this advances past the cluster
+/// for `Right` (to the next grapheme start, or EOL) and retracts to the
+/// cluster's own start for `Left`. Indices already on a boundary are unchanged.
+fn snap_grapheme_dir(line: &str, idx: usize, dir: WordDir) -> usize {
+    let n = char_count(line);
+    let idx = idx.min(n);
+    // On a boundary already? (EOL is always a boundary; else the index must be
+    // a grapheme start, i.e. snap-to-start is a no-op.)
+    if idx == n || snap_to_grapheme_start(line, idx) == idx {
+        return idx;
+    }
+    match dir {
+        WordDir::Right => {
+            // Advance past the grapheme that contains `idx` to its end (= next
+            // grapheme start, or EOL).
+            let mut cursor = 0;
+            for g in line.graphemes(true) {
+                let len = g.chars().count();
+                if cursor + len > idx {
+                    return (cursor + len).min(n);
+                }
+                cursor += len;
+            }
+            n
+        }
+        WordDir::Left => snap_to_grapheme_start(line, idx),
     }
 }
 
@@ -3707,5 +3780,91 @@ vault = "{vault}"
         assert_eq!(km.action_for(&ctrl('x')), Some(Action::Cut));
         // Untouched defaults survive (overrides layer, not replace).
         assert_eq!(km.action_for(&ctrl('q')), Some(Action::Quit));
+    }
+
+    // ── Adversarial re-hunt fixes (B1 data-loss, B4 grapheme) ─────────────
+
+    /// BLOCKER (B1): a mouse click arms a LATENT anchor (anchor == caret,
+    /// `selection()` returns None). Before the fix, the first typed char
+    /// drifted the caret off the anchor, so the NEXT keystroke hit the C6
+    /// replace-on-type guard and deleted the char just typed — silent data
+    /// loss on the most common interaction (click, then type). `insert_char`
+    /// now clears the latent anchor.
+    #[test]
+    fn latent_anchor_after_click_does_not_eat_next_typed_char() {
+        let mut s = state_from_body("hello");
+        // Simulate a click at col 2: caret + latent anchor both at {0,2}.
+        s.cx = 2;
+        s.selection_anchor = Some(Pos { line: 0, col: 2 });
+        assert!(
+            s.selection().is_none(),
+            "a click with no drag is an empty selection"
+        );
+        s.apply_action(Action::InsertChar('A')); // type 'A'
+        assert_eq!(s.body(), "heAllo");
+        assert!(
+            s.selection_anchor.is_none(),
+            "latent anchor cleared by the insert"
+        );
+        // The second keystroke must NOT C6-delete the char just typed.
+        s.apply_action(Action::InsertChar('B'));
+        assert_eq!(s.body(), "heABllo", "second char must not eat the first");
+    }
+
+    /// B1 also covers backspace/delete/newline — every raw buffer mutator drops
+    /// the latent anchor so a stale gap can never re-emerge as a selection.
+    #[test]
+    fn latent_anchor_cleared_by_backspace_and_delete_forward() {
+        let mut s = state_from_body("hello");
+        s.cx = 2;
+        s.selection_anchor = Some(Pos { line: 0, col: 2 }); // latent click
+        s.apply_action(Action::Backspace);
+        assert_eq!(s.body(), "hllo");
+        assert!(
+            s.selection_anchor.is_none(),
+            "backspace dropped latent anchor"
+        );
+        assert!(
+            s.selection().is_none(),
+            "no spurious selection after backspace"
+        );
+
+        // delete_forward from a latent anchor likewise must not later select.
+        let mut s = state_from_body("hello");
+        s.cx = 1;
+        s.selection_anchor = Some(Pos { line: 0, col: 1 });
+        s.apply_action(Action::DeleteForward);
+        assert_eq!(s.body(), "hllo");
+        assert!(s.selection_anchor.is_none());
+    }
+
+    /// B4 (C7): plain Ctrl+Right over a base+combining grapheme (`é` = e +
+    /// U+0301) must skip the WHOLE cluster. word_class sees the combining mark
+    /// as Punct, so word_boundary returns col 1 (mid-grapheme); the
+    /// direction-aware snap advances past it to col 2.
+    #[test]
+    fn plain_word_right_skips_combining_mark_grapheme() {
+        let mut s = state_from_body("e\u{0301} x"); // 'é' (2 chars), space, 'x'
+        s.cx = 0;
+        s.apply_action(Action::WordRight);
+        assert_eq!(
+            s.cx, 2,
+            "word-right lands past the é grapheme, not inside it"
+        );
+    }
+
+    /// B4 (C7): pure helper — snap_grapheme_dir advances forward / retracts to a
+    /// boundary. Direct test of the snap primitive the word-move relies on.
+    #[test]
+    fn snap_grapheme_dir_advances_and_retracts() {
+        let line = "e\u{0301} x"; // graphemes: é(0-1), space(2), x(3)
+                                  // col 1 is inside é. Right → next boundary (2); Left → this boundary (0).
+        assert_eq!(snap_grapheme_dir(line, 1, WordDir::Right), 2);
+        assert_eq!(snap_grapheme_dir(line, 1, WordDir::Left), 0);
+        // Already-on-boundary indices pass through unchanged.
+        assert_eq!(snap_grapheme_dir(line, 0, WordDir::Right), 0);
+        assert_eq!(snap_grapheme_dir(line, 2, WordDir::Right), 2);
+        // EOL (4) is a boundary.
+        assert_eq!(snap_grapheme_dir(line, 4, WordDir::Right), 4);
     }
 }
