@@ -76,7 +76,11 @@ impl App {
         &self.config
     }
 
-    pub fn deps(&self) -> &AppDeps {
+    /// Same-crate access to wired ports (`ops.rs` use cases). Deliberately
+    /// `pub(crate)` — exposing it crate-wide would invite the UI/CLI layer to
+    /// bypass application use cases and reach adapters directly, breaking the
+    /// §2.2 dispatch boundary (UI Event → AppAction → use case → Domain → Port).
+    pub(crate) fn deps(&self) -> &AppDeps {
         &self.deps
     }
 

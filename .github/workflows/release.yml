@@ -58,11 +58,13 @@ jobs:
           key: release-${{ matrix.target }}
 
       # Gate: refuse to build a release binary on a commit that fails the same
-      # checks CI enforces. `--all` and `-D warnings` mirror .github/workflows/ci.yml.
+      # checks CI enforces. `--all`, `-D warnings`, and `--locked` mirror
+      # .github/workflows/ci.yml (`--locked` pins Cargo.lock so a release never
+      # silently picks up a drifted dependency).
       - name: Gate (clippy + tests)
         run: |
-          cargo clippy --all-targets -- -D warnings
-          cargo test --all
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all
 
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}

@@ -42,10 +42,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Tests
-        run: cargo test --all
+        run: cargo test --locked --all
 
   # Portable Linux target: a STATIC musl binary (no glibc runtime dep — runs on
   # any distro) plus the `.deb` that wraps it (apt-format package, no runtime
