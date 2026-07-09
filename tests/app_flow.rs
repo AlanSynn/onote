@@ -71,6 +71,48 @@ impl Clipboard for FakeClipboard {
     }
 }
 
+/// Clipboard fake that records every `write_text` call into a shared cell.
+/// Backs the P4 copy/cut integration test: it proves the editor's
+/// `Copy`/`Cut` actions route the selection through `App::copy_text` → the
+/// `Clipboard` port → this sink (the App-free unit tests cover the dispatch
+/// logic; this covers the real wiring). `Mutex` (not `RefCell`) because the
+/// port is `&self` and the App holds the clipboard behind an `Arc<dyn
+/// Clipboard>` shared across calls.
+struct CapturingClipboard {
+    written: std::sync::Mutex<Vec<String>>,
+}
+impl CapturingClipboard {
+    fn new() -> Self {
+        Self {
+            written: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+    fn writes(&self) -> Vec<String> {
+        self.written.lock().expect("capture lock poisoned").clone()
+    }
+}
+impl Clipboard for CapturingClipboard {
+    fn read_text(&self) -> Result<Option<String>, ClipboardError> {
+        Ok(None)
+    }
+    fn read_image(&self) -> Result<Option<ImageData>, ClipboardError> {
+        Ok(None)
+    }
+    fn write_text(&self, text: &str) -> Result<(), ClipboardError> {
+        self.written
+            .lock()
+            .expect("capture lock poisoned")
+            .push(text.to_string());
+        Ok(())
+    }
+    fn write_html(&self, _html: &str, _plain: &str) -> Result<(), ClipboardError> {
+        Ok(())
+    }
+    fn write_image(&self, _image: &ImageData) -> Result<(), ClipboardError> {
+        Ok(())
+    }
+}
+
 struct NoopShare;
 impl ShareServer for NoopShare {
     fn start(
@@ -593,5 +635,40 @@ fn reindex_all_makes_preexisting_disk_notes_searchable() {
             .iter()
             .all(|h| h.path.as_str() != "Legacy.md"),
         "reindex_all must evict a note deleted from disk"
+    );
+}
+
+/// P4 plan §5 integration surface: the `Copy`/`Cut` actions route the selection
+/// through `App::copy_text` → the `Clipboard` port. The dispatch logic (select
+/// → text → copy → delete) is unit-tested App-free in `ui::tui`; this test pins
+/// the WIRING — that `copy_text` actually reaches the `Clipboard` impl the App
+/// was built with. `CapturingClipboard` records the write so we assert the
+/// exact substring landed in the OS clipboard, not a no-op.
+#[test]
+fn copy_text_routes_selection_through_clipboard_port() {
+    let tmp = tempfile::tempdir().unwrap();
+    let clip = Arc::new(CapturingClipboard::new());
+    let app = build_app_with_clipboard(tmp.path(), Arc::clone(&clip) as Arc<dyn Clipboard>);
+
+    // The editor's Copy/Cut call `app.copy_text(&selected_text)`. We can't reach
+    // the private editor from here, so drive the App boundary directly: this is
+    // the exact line the Copy action runs (dispatch_edit → copy_selection →
+    // app.copy_text). Verifying it captures proves the port wiring the actions
+    // depend on.
+    app.copy_text("selected substring")
+        .expect("copy_text must not error");
+    assert_eq!(
+        clip.writes(),
+        vec!["selected substring".to_string()],
+        "copy_text must write through the Clipboard port the App was built with"
+    );
+
+    // A second call appends (the port is stateless per-write), proving the
+    // capture isn't a one-shot artifact.
+    app.copy_text("more").unwrap();
+    assert_eq!(
+        clip.writes(),
+        vec!["selected substring".to_string(), "more".to_string()],
+        "the Clipboard port must record each write, not just the first"
     );
 }

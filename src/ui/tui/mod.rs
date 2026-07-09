@@ -797,25 +797,128 @@ impl EditorState {
         self.snap_head_to_grapheme();
     }
 
+    /// Delete the half-open char range `[start, end)` (document order; swapped
+    /// if reversed). Single-line splices one line; multi-line drops the covered
+    /// lines and joins the end-line tail onto the start line. Every slice goes
+    /// through [`char_to_byte`] (C1) so CJK/emoji never split a code point. The
+    /// caret lands at `start`, the selection is cleared, and the buffer is
+    /// marked dirty. An empty range is a no-op.
+    fn delete_range(&mut self, start: Pos, mut end: Pos) {
+        let mut start = start;
+        if start > end {
+            std::mem::swap(&mut start, &mut end);
+        }
+        if start == end {
+            return;
+        }
+        let last = self.lines.len().saturating_sub(1);
+        start.line = start.line.min(last);
+        end.line = end.line.min(last);
+        start.col = start.col.min(char_count(&self.lines[start.line]));
+        end.col = end.col.min(char_count(&self.lines[end.line]));
+
+        if start.line == end.line {
+            let line = &mut self.lines[start.line];
+            let b0 = char_to_byte(line, start.col);
+            let b1 = char_to_byte(line, end.col);
+            line.replace_range(b0..b1, "");
+        } else {
+            // Tail of the end line (after end.col) is spliced onto the start
+            // line's prefix (before start.col); the fully-covered middle lines
+            // and the end line are dropped in one drain.
+            let end_line = self.lines[end.line].clone();
+            let end_byte = char_to_byte(&end_line, end.col);
+            let tail = end_line[end_byte..].to_string();
+            self.lines.drain(start.line + 1..end.line + 1);
+            let start_byte = char_to_byte(&self.lines[start.line], start.col);
+            let start_line = &mut self.lines[start.line];
+            // Replace [start.col, EOL) on the start line with the end-line tail.
+            start_line.replace_range(start_byte.., &tail);
+        }
+        self.cy = start.line;
+        self.cx = start.col;
+        self.clear_selection();
+        self.mark_dirty();
+    }
+
+    /// The selected text (normalized range), or `None` if no selection. Join
+    /// char/byte boundaries via [`char_to_byte`] (C1). Used by Copy/Cut (P4).
+    fn selected_text(&self) -> Option<String> {
+        let sel = self.selection()?;
+        let (start, end) = sel.normalized();
+        let last = self.lines.len().saturating_sub(1);
+        let s_line = start.line.min(last);
+        let e_line = end.line.min(last);
+        let s_col = start.col.min(char_count(&self.lines[s_line]));
+        let e_col = end.col.min(char_count(&self.lines[e_line]));
+        let mut out = String::new();
+        if s_line == e_line {
+            let line = &self.lines[s_line];
+            out.push_str(&line[char_to_byte(line, s_col)..char_to_byte(line, e_col)]);
+        } else {
+            let s = &self.lines[s_line];
+            out.push_str(&s[char_to_byte(s, s_col)..]);
+            for ln in (s_line + 1)..e_line {
+                out.push('\n');
+                out.push_str(&self.lines[ln]);
+            }
+            out.push('\n');
+            let e = &self.lines[e_line];
+            out.push_str(&e[..char_to_byte(e, e_col)]);
+        }
+        Some(out)
+    }
+
+    /// Forward-delete (Delete key) with NO selection: remove the char after the
+    /// caret, or join the next line up when at EOL. The caret stays put. (A
+    /// selection is handled by the C6 replace-on-type guard before this runs.)
+    fn delete_forward(&mut self) {
+        let len = char_count(self.cur_line());
+        if self.cx < len {
+            if let Some(line) = self.lines.get_mut(self.cy) {
+                let b0 = char_to_byte(line, self.cx);
+                let b1 = char_to_byte(line, self.cx + 1);
+                line.replace_range(b0..b1, "");
+            }
+        } else if self.cy + 1 < self.lines.len() {
+            // At EOL: join the next line onto the current one (cursor unmoved).
+            let next = self.lines.remove(self.cy + 1);
+            if let Some(line) = self.lines.get_mut(self.cy) {
+                line.push_str(&next);
+            }
+        }
+        self.mark_dirty();
+    }
+
     /// Apply an App-free edit action directly to the buffer. App-dependent
     /// commands (save, paste, image-token, copy/cut, enter→image) are handled
     /// in [`dispatch_edit`] BEFORE this is reached. Split out so the editor
     /// mutation path is unit-testable without a full `App`.
     fn apply_action(&mut self, action: Action) {
-        // C6 (centralized replace-on-type, wired fully in P4): until then, a
-        // destructive/insert key with an active selection just DISMISSES it
-        // rather than silently mutating past it. The real delete-range /
-        // type-over-replaces behavior arrives with delete_range in P4; this
-        // guard is the safe stepping stone so a selection is never lost in a
-        // confusing half-state. Plain-move keys (handled below) also clear.
-        if self.selection().is_some()
-            && matches!(
-                action,
-                Action::InsertChar(_) | Action::Backspace | Action::Tab | Action::DeleteForward
-            )
-        {
-            self.clear_selection();
-            return;
+        // C6 (centralized replace-on-type): a destructive/insert key with an
+        // active selection REPLACES the range — delete it, then (for inserts)
+        // insert at the (now-collapsed) caret. One pre-check keeps the
+        // selection-aware behavior out of every individual edit method.
+        if let Some(sel) = self.selection() {
+            let (start, end) = sel.normalized();
+            match action {
+                Action::InsertChar(c) => {
+                    self.delete_range(start, end);
+                    self.insert_char(c);
+                    return;
+                }
+                Action::Tab => {
+                    self.delete_range(start, end);
+                    self.insert_char(' ');
+                    self.insert_char(' ');
+                    return;
+                }
+                Action::Backspace | Action::DeleteForward => {
+                    self.delete_range(start, end);
+                    return;
+                }
+                _ => {}
+            }
         }
         match action {
             Action::InsertChar(c) => self.insert_char(c),
@@ -824,6 +927,7 @@ impl EditorState {
                 self.insert_char(' ');
                 self.insert_char(' ');
             }
+            Action::DeleteForward => self.delete_forward(),
             // Plain motion: clear any selection, then move (C5).
             Action::MoveLeft => {
                 self.clear_selection();
@@ -858,8 +962,8 @@ impl EditorState {
             Action::SelectEnd => self.extend_selection(KeyCode::End),
             Action::SelectAll => self.select_all(),
             Action::ClearSelection => self.clear_selection(),
-            // DeleteForward (reached only with no selection, else cleared above)
-            // is wired with copy/cut/word-motion in P4/P5.
+            // Copy/Cut are App-dependent → handled in dispatch_edit. Word-motion
+            // lands in P5. Listing them via `_` keeps this match exhaustive.
             _ => {}
         }
     }
@@ -1033,13 +1137,67 @@ fn dispatch_edit(app: &App, state: &mut EditorState, action: Action) -> Result<C
             }
             Ok(Control::Continue)
         }
-        // All App-free editor mutations (insert, motion, tab, backspace) plus
-        // the not-yet-wired selection / copy-cut / word actions.
+        // ^Shift+C copies the selection to the clipboard (Ctrl+C stays quit).
+        // The clipboard write is injected so `copy_selection` is App-free-testable.
+        Action::Copy => copy_selection(state, |t| app.copy_text(t)),
+        // ^X cuts: copy the selection, then delete the range in one step.
+        Action::Cut => cut_selection(state, |t| app.copy_text(t)),
+        // All App-free editor mutations (insert, motion, tab, backspace,
+        // forward-delete, selection). Word-motion lands in P5.
         _ => {
             state.apply_action(action);
             Ok(Control::Continue)
         }
     }
+}
+
+/// Copy the active selection to the clipboard via the injected `copy` sink.
+///
+/// The `copy` closure returns a `Result` so the caller supplies the real
+/// clipboard write (`app.copy_text`) in production and a capturing sink in
+/// unit tests — `copy_selection`/`cut_selection` stay free of `App`, so the
+/// "selection → clipboard" path is tested without building the 8-dep
+/// `AppDeps` graph (CLAUDE.md §1.3; the §9 guard test comment applies the same
+/// "heavy App paths go to the integration harness" rationale to the editor).
+/// `E: Display` lets the test sink fail with any error type, matching how
+/// `anyhow::Error` renders in the production toast.
+fn copy_selection<E: std::fmt::Display>(
+    state: &mut EditorState,
+    copy: impl FnOnce(&str) -> Result<(), E>,
+) -> Result<Control> {
+    match state.selected_text() {
+        Some(text) => match copy(&text) {
+            Ok(()) => state.toast("copied"),
+            Err(e) => state.toast(format!("copy failed: {e}")),
+        },
+        None => state.toast("nothing selected"),
+    }
+    Ok(Control::Continue)
+}
+
+/// Cut: copy the selection, then delete its range in one step. Like
+/// [`copy_selection`], the clipboard write is injected so this is App-free
+/// testable. The delete happens only on a successful copy (CLAUDE.md §3.1 —
+/// never silently lose data): a clipboard failure leaves the selection intact.
+fn cut_selection<E: std::fmt::Display>(
+    state: &mut EditorState,
+    copy: impl FnOnce(&str) -> Result<(), E>,
+) -> Result<Control> {
+    if let Some(text) = state.selected_text() {
+        match copy(&text) {
+            Ok(()) => {
+                if let Some(sel) = state.selection() {
+                    let (start, end) = sel.normalized();
+                    state.delete_range(start, end);
+                }
+                state.toast("cut");
+            }
+            Err(e) => state.toast(format!("cut failed: {e}")),
+        }
+    } else {
+        state.toast("nothing selected");
+    }
+    Ok(Control::Continue)
 }
 
 /// Keys while the image preview modal is open (`CLAUDE.md` §2.4).
@@ -2696,25 +2854,24 @@ mod tests {
     }
 
     #[test]
-    fn plain_move_and_destructive_key_clear_selection() {
+    fn plain_move_clears_selection_and_insert_replaces_it() {
         let mut s = state_from_body("hello");
         s.apply_action(Action::SelectRight);
         assert!(s.selection().is_some());
-        // A plain move clears it.
+        // A plain move clears the selection (does not extend it).
         s.apply_action(Action::MoveLeft);
         assert!(s.selection().is_none());
-        // Re-select, then a destructive key clears WITHOUT mutating the buffer
-        // (P2 stepping stone; the real delete-range/type-over arrives in P4, C6).
+        // Re-select char 0 ('h'), then type — C6 replaces the selection: 'h' is
+        // deleted and 'z' inserted in its place, caret lands after the new char.
         s.apply_action(Action::SelectRight);
-        assert!(s.selection().is_some());
-        let before = s.body();
-        s.apply_action(Action::InsertChar('z'));
-        assert!(s.selection().is_none(), "insert clears selection");
         assert_eq!(
-            s.body(),
-            before,
-            "P2: insert dismisses selection but does not yet type-over"
+            s.selection().map(|x| x.normalized()),
+            Some((Pos { line: 0, col: 0 }, Pos { line: 0, col: 1 }))
         );
+        s.apply_action(Action::InsertChar('z'));
+        assert!(s.selection().is_none(), "insert collapses the selection");
+        assert_eq!(s.body(), "zello", "C6: typing replaces the selected char");
+        assert_eq!(s.cx, 1, "caret lands after the inserted char");
     }
 
     #[test]
@@ -2956,5 +3113,223 @@ mod tests {
             "drag past the bottom edge scrolled down one line"
         );
         assert_eq!(s.cy, 5, "head pinned to the last line");
+    }
+
+    // ── Delete / copy / cut (P4, contracts C1/C6) ──────────────────────────
+
+    /// Select a char range `[a, b)` on line 0 of `body` (forward), then return
+    /// the state ready for a delete/copy assertion.
+    fn select_line_range(body: &str, a: usize, b: usize) -> EditorState {
+        let mut s = state_from_body(body);
+        s.cx = a;
+        s.apply_action(Action::SelectRight);
+        // Extend to col b (SelectRight moves head by 1 each call from col a).
+        for _ in a..b.saturating_sub(1) {
+            s.apply_action(Action::SelectRight);
+        }
+        s
+    }
+
+    #[test]
+    fn delete_range_single_line() {
+        let mut s = select_line_range("hello", 1, 3); // select "el"
+        let (start, end) = s.selection().unwrap().normalized();
+        s.delete_range(start, end);
+        assert_eq!(s.body(), "hlo");
+        assert_eq!(s.cx, 1, "caret lands at the deletion start");
+        assert!(s.selection().is_none(), "delete clears the selection");
+    }
+
+    #[test]
+    fn delete_range_backward_normalizes() {
+        // Backward selection (anchor after head) still deletes the same span.
+        let mut s = state_from_body("hello");
+        s.cx = 3;
+        s.selection_anchor = Some(Pos { line: 0, col: 1 }); // anchor 1, head 3
+        let (start, end) = s.selection().unwrap().normalized();
+        assert_eq!((start.col, end.col), (1, 3));
+        s.delete_range(start, end);
+        assert_eq!(s.body(), "hlo", "backward range deletes identically");
+    }
+
+    #[test]
+    fn delete_range_across_lines_joins() {
+        // Select line 0 col 1 → line 2 col 1 over "ab\nCD\nef": spans
+        // "b" + "\nCD" + "\ne". Deleting leaves "a" + "f" (end-line tail) = "af".
+        let mut s = state_from_body("ab\nCD\nef");
+        s.selection_anchor = Some(Pos { line: 0, col: 1 });
+        s.cy = 2;
+        s.cx = 1;
+        let (start, end) = s.selection().unwrap().normalized();
+        s.delete_range(start, end);
+        assert_eq!(
+            s.body(),
+            "af",
+            "middle line dropped, end-line tail joined on"
+        );
+        assert_eq!(s.cy, 0);
+        assert_eq!(s.cx, 1, "caret at the deletion start");
+    }
+
+    #[test]
+    fn delete_range_empty_is_noop() {
+        let mut s = state_from_body("hello");
+        s.delete_range(Pos { line: 0, col: 2 }, Pos { line: 0, col: 2 });
+        assert_eq!(s.body(), "hello", "empty range deletes nothing");
+    }
+
+    #[test]
+    fn delete_range_multibyte_uses_char_boundaries() {
+        // "你好世界", delete chars [1,3) = "好世" → "你好"... wait [1,3) = 好世, leaving 你界.
+        let mut s = state_from_body("你好世界");
+        s.delete_range(Pos { line: 0, col: 1 }, Pos { line: 0, col: 3 });
+        assert_eq!(s.body(), "你界", "CJK deleted as whole chars, no panic");
+    }
+
+    #[test]
+    fn selected_text_single_and_multiline() {
+        let s = select_line_range("hello", 1, 4); // "ell"
+        assert_eq!(s.selected_text().as_deref(), Some("ell"));
+
+        let mut m = state_from_body("ab\nCD\nef");
+        m.selection_anchor = Some(Pos { line: 0, col: 1 });
+        m.cy = 2;
+        m.cx = 1;
+        // "b" + "\nCD" + "\ne" → "b\nCD\ne"
+        assert_eq!(m.selected_text().as_deref(), Some("b\nCD\ne"));
+    }
+
+    #[test]
+    fn selected_text_none_when_empty() {
+        let s = state_from_body("hello");
+        assert!(s.selected_text().is_none());
+    }
+
+    #[test]
+    fn delete_forward_in_line_and_join_at_eol() {
+        let mut s = state_from_body("abc");
+        s.cx = 1;
+        s.apply_action(Action::DeleteForward);
+        assert_eq!(s.body(), "ac", "deletes the char after the caret");
+        assert_eq!(s.cx, 1, "caret stays put");
+
+        // At EOL, forward-delete joins the next line up.
+        let mut s = state_from_body("ab\ncd");
+        s.cx = 2; // end of "ab"
+        s.apply_action(Action::DeleteForward);
+        assert_eq!(s.body(), "abcd", "EOL forward-delete joins lines");
+        assert_eq!(s.cx, 2, "caret stays at the join point");
+    }
+
+    /// C6 across the board: Backspace/Tab/DeleteForward on a selection all
+    /// collapse to a plain delete of the range.
+    #[test]
+    fn destructive_keys_replace_selection() {
+        // Backspace on selection just deletes (no extra char removed).
+        let mut s = select_line_range("hello", 1, 3);
+        s.apply_action(Action::Backspace);
+        assert_eq!(s.body(), "hlo");
+        assert_eq!(s.cx, 1);
+
+        // DeleteForward on a selection deletes the range (not the next char).
+        let mut s = select_line_range("hello", 1, 3);
+        s.apply_action(Action::DeleteForward);
+        assert_eq!(s.body(), "hlo");
+
+        // Tab on a selection deletes the range and inserts two spaces.
+        let mut s = select_line_range("hello", 1, 3);
+        s.apply_action(Action::Tab);
+        assert_eq!(s.body(), "h  lo");
+    }
+
+    // ── Copy / Cut dispatch (P4, plan §5 integration surface) ─────────────
+    //
+    // `copy_selection`/`cut_selection` take an injected clipboard sink, so the
+    // "selection → clipboard" path is tested App-free (no 8-dep `AppDeps`).
+
+    /// Clipboard-failure stand-in for the "cut preserves buffer on error" test.
+    /// Defined at module scope so the `Display` impl lives next to it (can't
+    /// impl a trait for a type from outside its defining scope).
+    struct ClipBoom;
+    impl std::fmt::Display for ClipBoom {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "ClipBoom")
+        }
+    }
+
+    /// Copy captures the normalized selection text and leaves the buffer intact.
+    #[test]
+    fn copy_selection_captures_text_and_preserves_buffer() {
+        use std::cell::RefCell;
+        let mut s = select_line_range("hello", 1, 3); // select "el"
+        let captured = RefCell::new(String::new());
+        let ctrl = copy_selection(&mut s, |t| {
+            *captured.borrow_mut() = t.to_string();
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap();
+        assert_eq!(ctrl, Control::Continue);
+        assert_eq!(&*captured.borrow(), "el", "captured the selected span");
+        assert_eq!(s.body(), "hello", "copy never mutates the buffer");
+        assert!(s.selection().is_some(), "copy keeps the selection active");
+        assert_eq!(
+            s.message.as_ref().unwrap().1,
+            "copied",
+            "toast confirms the copy"
+        );
+    }
+
+    /// Copy with nothing selected toasts "nothing selected" and copies nothing.
+    #[test]
+    fn copy_selection_with_no_selection_toasts_and_copies_nothing() {
+        use std::cell::RefCell;
+        let mut s = state_from_body("hello");
+        let captured = RefCell::new(None::<String>);
+        copy_selection(&mut s, |t| {
+            *captured.borrow_mut() = Some(t.to_string());
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap();
+        assert!(captured.borrow().is_none(), "sink was never called");
+        assert_eq!(s.message.as_ref().unwrap().1, "nothing selected");
+    }
+
+    /// Cut captures the text AND deletes the range, collapsing the caret.
+    #[test]
+    fn cut_selection_copies_then_deletes() {
+        use std::cell::RefCell;
+        let mut s = select_line_range("hello", 1, 3); // select "el"
+        let captured = RefCell::new(String::new());
+        let ctrl = cut_selection(&mut s, |t| {
+            *captured.borrow_mut() = t.to_string();
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap();
+        assert_eq!(ctrl, Control::Continue);
+        assert_eq!(&*captured.borrow(), "el", "cut copied the span first");
+        assert_eq!(s.body(), "hlo", "then deleted the range");
+        assert_eq!(s.cx, 1, "caret at the deletion start");
+        assert!(s.selection().is_none(), "cut clears the selection");
+        assert_eq!(s.message.as_ref().unwrap().1, "cut");
+    }
+
+    /// CLAUDE.md §3.1: a clipboard failure must NOT delete the selection's text
+    /// (never silently lose data). `cut_selection` leaves the buffer intact and
+    /// toasts the failure.
+    #[test]
+    fn cut_selection_preserves_buffer_on_clipboard_error() {
+        let mut s = select_line_range("hello", 1, 3); // select "el"
+        let ctrl = cut_selection(&mut s, |_| Err(ClipBoom)).unwrap();
+        assert_eq!(ctrl, Control::Continue);
+        assert_eq!(s.body(), "hello", "failed copy did not delete anything");
+        assert!(
+            s.selection().is_some(),
+            "selection survives a clipboard failure"
+        );
+        assert_eq!(
+            s.message.as_ref().unwrap().1,
+            "cut failed: ClipBoom",
+            "failure rendered via Display into the toast"
+        );
     }
 }
