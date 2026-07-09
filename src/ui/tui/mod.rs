@@ -38,7 +38,7 @@ use anyhow::Result;
 use crossterm::cursor::Show;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseEvent, MouseEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -60,7 +60,8 @@ use ratatui_image::{Resize, StatefulImage};
 // Display-width for the editor cursor column (`CLAUDE.md` §2.4): a char's
 // terminal column span (CJK = 2, emoji = 2, ASCII = 1) differs from its byte
 // or char count, so the cursor x must come from `UnicodeWidthStr`, not `cx`.
-use unicode_width::UnicodeWidthStr;
+// `UnicodeWidthChar` is the per-char form used by the inverse map (P3, C2).
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 // Grapheme clusters for selection endpoints (C7): a multi-code-point grapheme
 // (ZWJ emoji, `e` + combining mark) is one selectable unit.
 use unicode_segmentation::UnicodeSegmentation;
@@ -534,6 +535,15 @@ pub struct EditorState {
     overlay: Option<ImageOverlay>,
     /// Editor viewport height from the last render (for mouse-scroll clamping).
     view_height: usize,
+    /// Editor inner rect origin/width from the last render — used to map a mouse
+    /// event's screen (column,row) to a buffer [`Pos`] (P3 mouse selection).
+    /// Origin is `inner.x`/`inner.y`; width is `inner.width`.
+    editor_x: u16,
+    editor_y: u16,
+    editor_width: u16,
+    /// True while the left button is held (Down…Up). Gates Drag/Moved handling
+    /// and lets `Moved` (some terminals don't emit `Drag`) extend the selection.
+    mouse_dragging: bool,
     /// Resolved keybindings (`CLAUDE.md` §5 KeymapRegistry): every edit-mode
     /// key resolves through here. Defaults overlaid with `[keymap]` config.
     keymap: KeymapRegistry,
@@ -571,6 +581,10 @@ impl EditorState {
             picker: None,
             overlay: None,
             view_height: 0,
+            editor_x: 0,
+            editor_y: 0,
+            editor_width: 0,
+            mouse_dragging: false,
             keymap: KeymapRegistry::defaults(),
             selection_anchor: None,
         }
@@ -928,7 +942,7 @@ fn main_loop(
                 }
                 // Spike 2 mouse scroll: nudge the viewport without moving the
                 // cursor (reader-style). Captured via EnableMouseCapture in run().
-                Event::Mouse(mouse) => handle_mouse(state, mouse),
+                Event::Mouse(mouse) => handle_mouse(app, state, mouse),
                 _ => {}
             }
         }
@@ -1190,16 +1204,100 @@ fn delete_image_token(app: &App, state: &mut EditorState) -> Result<Control> {
     Ok(Control::Continue)
 }
 
-/// Reader-style viewport scroll on mouse wheel (Spike 2).
-fn handle_mouse(state: &mut EditorState, mouse: MouseEvent) {
+/// Mouse handling (Spike 2 wheel scroll + P3 selection). Wheel scrolls the
+/// viewport reader-style; left-button Down/Drag/Up perform click-to-move and
+/// drag-to-select. Down sets anchor=head at the hit cell (a pure click just
+/// moves the caret — anchor==head → empty selection); Drag/Moved move only the
+/// head (the caret), so the selection grows from the anchor. Dragging past the
+/// viewport edges autoscrolls (C3). Clicks outside the editor rect are ignored.
+fn handle_mouse(app: &App, state: &mut EditorState, mouse: MouseEvent) {
+    // The char-column resolver is the ONLY App dependency in the mouse path
+    // (glyph substitution). Injecting it lets `handle_mouse_with` (the whole
+    // Down/Drag/Up state machine) be unit-tested App-free with a plain resolver.
+    handle_mouse_with(state, mouse, |line, d| display_col_to_char(app, line, d));
+}
+
+/// App-free core of [`handle_mouse`] (testable): same Down/Drag/Up selection
+/// state machine, but resolves a hit column via `char_at` instead of `App`.
+fn handle_mouse_with<R>(state: &mut EditorState, mouse: MouseEvent, char_at: R)
+where
+    R: Fn(&str, usize) -> usize,
+{
     match mouse.kind {
         MouseEventKind::ScrollUp => state.scroll = state.scroll.saturating_sub(3),
         MouseEventKind::ScrollDown => {
             let max = state.lines.len().saturating_sub(state.view_height.max(1));
             state.scroll = (state.scroll + 3).min(max);
         }
+        MouseEventKind::Down(MouseButton::Left) => {
+            if let Some(p) = mouse_to_pos_with(state, mouse.column, mouse.row, &char_at) {
+                state.cy = p.line;
+                state.cx = p.col;
+                // Anchor == head == click: a click with no drag is an empty
+                // selection (just a moved caret); the first Drag leaves the
+                // anchor here and extends the head away from it.
+                state.selection_anchor = Some(p);
+                state.mouse_dragging = true;
+                state.adjust_scroll(state.view_height);
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) if state.mouse_dragging => {
+            mouse_drag_to_with(state, mouse.column, mouse.row, &char_at);
+        }
+        // Some terminals report `Moved` (not `Drag`) while a button is held;
+        // treat it as a drag when we know the button is down (mouse_dragging).
+        MouseEventKind::Moved if state.mouse_dragging => {
+            mouse_drag_to_with(state, mouse.column, mouse.row, &char_at);
+        }
+        MouseEventKind::Up(MouseButton::Left) => state.mouse_dragging = false,
         _ => {}
     }
+}
+
+/// Map a screen (column, row) to a buffer [`Pos`], or `None` if it's outside
+/// the editor inner rect. The hit column becomes a char index via `char_at`
+/// (the inverse display-col map, C2, grapheme-snapped C7). Row → absolute line
+/// via the scroll offset, clamped to the last line (a hit below the viewport
+/// pins to the last line while autoscroll catches up).
+fn mouse_to_pos_with<R>(state: &EditorState, col: u16, row: u16, char_at: &R) -> Option<Pos>
+where
+    R: Fn(&str, usize) -> usize,
+{
+    if col < state.editor_x || row < state.editor_y {
+        return None;
+    }
+    let dx = (col - state.editor_x) as usize;
+    let dy = (row - state.editor_y) as usize;
+    let last = state.lines.len().saturating_sub(1);
+    let line_idx = state.scroll.saturating_add(dy).min(last);
+    let line = state.lines.get(line_idx)?;
+    let char_col = char_at(line, dx.min(state.editor_width as usize));
+    Some(Pos {
+        line: line_idx,
+        col: char_col,
+    })
+}
+
+/// Extend the selection head to the drag position, autoscrolling when the drag
+/// leaves the viewport edges (C3). Only the head (caret) moves — the anchor set
+/// on Down is untouched, so the selection tracks the pointer from the anchor.
+fn mouse_drag_to_with<R>(state: &mut EditorState, col: u16, row: u16, char_at: &R)
+where
+    R: Fn(&str, usize) -> usize,
+{
+    let bottom = state.editor_y.saturating_add(state.view_height as u16);
+    if row >= bottom && state.scroll + state.view_height < state.lines.len() {
+        state.scroll += 1; // drag below the viewport → scroll down (C3)
+    } else if row < state.editor_y && state.scroll > 0 {
+        state.scroll -= 1; // drag above the viewport → scroll up (C3)
+    }
+    if let Some(p) = mouse_to_pos_with(state, col, row, char_at) {
+        state.cy = p.line;
+        state.cx = p.col;
+    }
+    // A drag that left the editor horizontally (col < editor_x or past width)
+    // still keeps the head's line; mouse_to_pos_with returns None there, so the
+    // caret stays put — acceptable, since vertical autoscroll is the common case.
 }
 
 fn handle_fuzzy_event(app: &App, state: &mut EditorState, key: KeyEvent) -> Result<Control> {
@@ -1366,6 +1464,11 @@ fn render_editor(app: &App, state: &mut EditorState, frame: &mut Frame, area: Re
 
     let height = inner.height as usize;
     state.view_height = height;
+    // Stash the inner rect so mouse events (which arrive in screen coords) can
+    // map back to a buffer cell (P3). Origin + width; height == view_height.
+    state.editor_x = inner.x;
+    state.editor_y = inner.y;
+    state.editor_width = inner.width;
 
     // Each buffer line is exactly one visual row — NO wrapping — so a logical
     // line's screen row is exact and the cursor column maps cleanly to a display
@@ -1806,6 +1909,83 @@ fn display_col_from_spans(line: &str, spans: &[(usize, usize, String)], cx: usiz
         col += UnicodeWidthStr::width(&line[cur..byte_cx]);
     }
     col
+}
+
+/// Inverse of [`display_col_from_spans`] (contract C2): the CHAR index whose
+/// display cell contains `display_col`. Walks the same text/glyph layout but
+/// sums widths until the target cell is reached.
+///
+/// Rules (C2): a wide char's mid-cell click snaps LEFT (returns that char's
+/// index); a click anywhere on an image-glyph returns the token's START char
+/// (the glyph is atomic — same rule as render C4); a click past EOL clamps to
+/// `char_count(line)`. `display_col` is a display column (terminal cells), not
+/// a char index.
+fn display_col_to_char_from_spans(
+    line: &str,
+    spans: &[(usize, usize, String)],
+    display_col: usize,
+) -> usize {
+    let mut col = 0usize; // running display width consumed
+    let mut char_idx = 0usize; // running char count consumed
+    let mut cur_byte = 0usize;
+    for (start, end, glyph) in spans {
+        if *start > cur_byte {
+            let text = &line[cur_byte..*start];
+            if let Some(off) = char_at_display(text, col, display_col) {
+                return char_idx + off;
+            }
+            col += UnicodeWidthStr::width(text);
+            char_idx += char_count(text);
+            // `cur_byte` is advanced to `*end` below; the gap up to `*start` is
+            // consumed here, so no separate update is needed.
+        }
+        let glyph_w = UnicodeWidthStr::width(glyph.as_str());
+        if display_col < col + glyph_w {
+            // Click lands on the glyph → its token's start char (atomic, C2/C4).
+            return char_idx;
+        }
+        col += glyph_w;
+        char_idx += char_count(&line[*start..*end]);
+        cur_byte = *end;
+    }
+    if cur_byte < line.len() {
+        let text = &line[cur_byte..line.len()];
+        if let Some(off) = char_at_display(text, col, display_col) {
+            return char_idx + off;
+        }
+        char_idx += char_count(text);
+    }
+    // Past EOL → clamp to the char count.
+    char_idx
+}
+
+/// Char offset within `text` of the cell containing `display_col`, given the
+/// display width `col0` already consumed before `text`. Wide-char mid-cell →
+/// snaps LEFT (returns that char's offset); zero-width chars are stepped over
+/// (their cell is empty, so a click can't land on them). `None` if `display_col`
+/// is past `text`'s last cell.
+fn char_at_display(text: &str, col0: usize, display_col: usize) -> Option<usize> {
+    let mut col = col0;
+    for (off, c) in text.chars().enumerate() {
+        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        // Invariant: display_col >= col (we'd have returned earlier otherwise),
+        // so the click is on this char's cell iff display_col < col + w (w>0).
+        if display_col < col + w {
+            return Some(off);
+        }
+        col += w;
+    }
+    None
+}
+
+/// Inverse of [`cursor_display_col`] for mouse hits: the char index at display
+/// column `display_col` on `line`, grapheme-snapped (C7) so a click lands on a
+/// grapheme boundary (a click on the right half of a ZWJ emoji still anchors at
+/// its start).
+fn display_col_to_char(app: &App, line: &str, display_col: usize) -> usize {
+    let spans = glyph_spans(app, line);
+    let c = display_col_to_char_from_spans(line, &spans, display_col);
+    snap_to_grapheme_start(line, c)
 }
 
 /// Trailing path segment of an attachment target (file basename).
@@ -2577,5 +2757,204 @@ mod tests {
         let doc = NoteDocument::from_raw(path, "fresh", 0);
         s.reload(doc);
         assert!(s.selection().is_none());
+    }
+
+    // ── Selection: inverse display-col→char map (P3, contract C2) ──────────
+
+    /// Round-trip on plain text (no glyphs): for every char index,
+    /// `inverse(forward(c)) == c`. CJK (2-wide) chars are clean inverses at
+    /// their left edges; a mid-cell click snaps LEFT.
+    #[test]
+    fn inverse_map_round_trips_plain_text() {
+        for (line, len) in [("abc", 3usize), ("你好", 2usize), ("a好b", 3usize)] {
+            for c in 0..=len {
+                let d = display_col_from_spans(line, &[], c);
+                let back = display_col_to_char_from_spans(line, &[], d);
+                assert_eq!(
+                    back, c,
+                    "round-trip char {c} on {line:?}: fwd={d} back={back}"
+                );
+            }
+        }
+        // CJK mid-cell snaps LEFT (the wide char's own index).
+        assert_eq!(display_col_to_char_from_spans("你好", &[], 1), 0);
+        assert_eq!(display_col_to_char_from_spans("你好", &[], 3), 1);
+        // Past EOL clamps to char_count.
+        assert_eq!(display_col_to_char_from_spans("abc", &[], 99), 3);
+    }
+
+    /// An image glyph is atomic in the inverse map too: a click anywhere on its
+    /// cells returns the token's START char (C2/C4), never an interior char.
+    #[test]
+    fn inverse_map_glyph_is_atomic_token_start() {
+        // Glyph over chars [1,3) ("bc" → "[img]", 5 cells). Layout:
+        //   a@col0 · glyph@col1..6 (chars 1,2) · d@col6 (char 3)
+        // char 2 ('c') lives inside the glyph and is unreachable as a hit.
+        let spans = [(1usize, 3usize, "[img]".to_string())];
+        let line = "abcd";
+        // Any of the glyph's 5 cells → token start char (1).
+        for d in 1..6 {
+            assert_eq!(
+                display_col_to_char_from_spans(line, &spans, d),
+                1,
+                "glyph cell {d} → token start char"
+            );
+        }
+        // Surrounding text maps to its own chars.
+        assert_eq!(display_col_to_char_from_spans(line, &spans, 0), 0, "'a'");
+        assert_eq!(display_col_to_char_from_spans(line, &spans, 6), 3, "'d'");
+        assert_eq!(
+            display_col_to_char_from_spans(line, &spans, 99),
+            4,
+            "past EOL clamps to char_count"
+        );
+    }
+
+    /// A combining mark is zero-width: its cell can't be hit, so a click past
+    /// the base char's cell clamps to the line end (the grapheme-snap applied
+    /// in `display_col_to_char` then bounds it to a grapheme edge at the call
+    /// site — tested via the pure map here without snap).
+    #[test]
+    fn inverse_map_skips_zero_width_combining_mark() {
+        let line = "e\u{0301}"; // 'e' (1 cell) + combining acute (0 cells)
+        assert_eq!(
+            display_col_to_char_from_spans(line, &[], 0),
+            0,
+            "base char cell"
+        );
+        // Col 1 is past the single visible cell → clamp to char_count (2).
+        assert_eq!(display_col_to_char_from_spans(line, &[], 1), 2);
+    }
+
+    // ── Selection: mouse Down/Drag/Up (P3, contracts C2/C3) ────────────────
+    //
+    // Drives the App-free `handle_mouse_with` with a plain-text resolver
+    // (no glyphs → empty spans; grapheme snap is identity on ASCII) so the
+    // full Down→Drag→Up state machine is covered without building an `App`.
+
+    /// A resolver equivalent to the real one for plain text: inverse map (no
+    /// glyphs) + grapheme snap.
+    fn plain_resolver(line: &str, display_col: usize) -> usize {
+        let c = display_col_to_char_from_spans(line, &[], display_col);
+        snap_to_grapheme_start(line, c)
+    }
+
+    /// Editor state for `body` with a fake inner rect at (x,y) of `w`×`h`.
+    fn mouse_state(body: &str, x: u16, y: u16, w: u16, h: usize) -> EditorState {
+        let mut s = state_from_body(body);
+        s.editor_x = x;
+        s.editor_y = y;
+        s.editor_width = w;
+        s.view_height = h;
+        s
+    }
+
+    fn left(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn mouse_down_drag_selects_a_range() {
+        let mut s = mouse_state("hello\nworld", 5, 3, 80, 20);
+        // Down at col 7 (= dx 2) on line 0 → anchor + caret at (0,2).
+        handle_mouse_with(
+            &mut s,
+            left(MouseEventKind::Down(MouseButton::Left), 7, 3),
+            plain_resolver,
+        );
+        assert_eq!(s.cy, 0);
+        assert_eq!(s.cx, 2);
+        assert!(s.mouse_dragging);
+        assert_eq!(s.selection_anchor, Some(Pos { line: 0, col: 2 }));
+        // Drag to col 11 (= dx 6) on line 1 → head moves; anchor stays.
+        handle_mouse_with(
+            &mut s,
+            left(MouseEventKind::Drag(MouseButton::Left), 11, 4),
+            plain_resolver,
+        );
+        let sel = s.selection().expect("drag produced a selection");
+        assert_eq!(sel.anchor, Pos { line: 0, col: 2 }, "anchor fixed at Down");
+        assert_eq!(
+            sel.head,
+            Pos { line: 1, col: 5 },
+            "head = 'world' end (dx clamps)"
+        );
+        assert_eq!(sel.normalized().0, Pos { line: 0, col: 2 });
+    }
+
+    #[test]
+    fn mouse_click_without_drag_just_moves_caret() {
+        let mut s = mouse_state("hello", 5, 3, 80, 20);
+        // Down then Up at the same cell: anchor==head → empty (no selection),
+        // caret moved to the click.
+        handle_mouse_with(
+            &mut s,
+            left(MouseEventKind::Down(MouseButton::Left), 8, 3),
+            plain_resolver,
+        );
+        handle_mouse_with(
+            &mut s,
+            left(MouseEventKind::Up(MouseButton::Left), 8, 3),
+            plain_resolver,
+        );
+        assert!(!s.mouse_dragging);
+        assert_eq!(s.cx, 3, "caret moved to the click (dx 3)");
+        assert!(s.selection().is_none(), "a pure click is not a selection");
+    }
+
+    /// Clicks outside the editor inner rect are ignored (no caret/anchor move).
+    #[test]
+    fn mouse_click_outside_editor_rect_is_ignored() {
+        let mut s = mouse_state("hello", 5, 3, 80, 20);
+        let (cy, cx) = (s.cy, s.cx);
+        // col 2 < editor_x 5 → outside.
+        handle_mouse_with(
+            &mut s,
+            left(MouseEventKind::Down(MouseButton::Left), 2, 3),
+            plain_resolver,
+        );
+        // row 1 < editor_y 3 → outside.
+        handle_mouse_with(
+            &mut s,
+            left(MouseEventKind::Down(MouseButton::Left), 7, 1),
+            plain_resolver,
+        );
+        assert_eq!(
+            (s.cy, s.cx),
+            (cy, cx),
+            "outside-rect clicks do not move the caret"
+        );
+        assert!(s.selection_anchor.is_none());
+        assert!(!s.mouse_dragging);
+    }
+
+    /// Dragging past the bottom edge autoscrolls the viewport (C3).
+    #[test]
+    fn mouse_drag_past_bottom_autoscrolls() {
+        // 6 lines, viewport shows 3 (rows 3..6). editor_y=3, view_height=3.
+        let mut s = mouse_state("a\nb\nc\nd\ne\nf", 0, 3, 80, 3);
+        assert_eq!(s.scroll, 0);
+        // Start a drag on the top visible line, then drag to row 10 (well past
+        // the bottom at row 6).
+        handle_mouse_with(
+            &mut s,
+            left(MouseEventKind::Down(MouseButton::Left), 0, 3),
+            plain_resolver,
+        );
+        handle_mouse_with(
+            &mut s,
+            left(MouseEventKind::Drag(MouseButton::Left), 0, 10),
+            plain_resolver,
+        );
+        assert_eq!(
+            s.scroll, 1,
+            "drag past the bottom edge scrolled down one line"
+        );
+        assert_eq!(s.cy, 5, "head pinned to the last line");
     }
 }
