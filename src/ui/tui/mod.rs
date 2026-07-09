@@ -61,6 +61,9 @@ use ratatui_image::{Resize, StatefulImage};
 // terminal column span (CJK = 2, emoji = 2, ASCII = 1) differs from its byte
 // or char count, so the cursor x must come from `UnicodeWidthStr`, not `cx`.
 use unicode_width::UnicodeWidthStr;
+// Grapheme clusters for selection endpoints (C7): a multi-code-point grapheme
+// (ZWJ emoji, `e` + combining mark) is one selectable unit.
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::application::ops::SaveOutcome;
 use crate::application::App;
@@ -534,6 +537,13 @@ pub struct EditorState {
     /// Resolved keybindings (`CLAUDE.md` §5 KeymapRegistry): every edit-mode
     /// key resolves through here. Defaults overlaid with `[keymap]` config.
     keymap: KeymapRegistry,
+    /// Selection anchor (`CLAUDE.md` §3.1 + plan §2A). `None` = no selection.
+    /// Only the ANCHOR is stored: the moving head is always the caret (`cy`,`cx`),
+    /// so the selection can never diverge from where the cursor is drawn (DRY,
+    /// single source of truth — plan §2A). A full [`Selection`] is reconstructed
+    /// on demand via [`EditorState::selection`]. Endpoints are grapheme-snapped
+    /// (contract C7) so é / ZWJ-emoji select as one unit.
+    selection_anchor: Option<Pos>,
 }
 
 impl EditorState {
@@ -562,6 +572,7 @@ impl EditorState {
             overlay: None,
             view_height: 0,
             keymap: KeymapRegistry::defaults(),
+            selection_anchor: None,
         }
     }
 
@@ -581,6 +592,10 @@ impl EditorState {
         self.cy = 0;
         self.scroll = 0;
         self.status = SyncStatus::Clean;
+        // C5 lifecycle: a reload swaps the buffer out from under any active
+        // selection, so the selection (char-indexed into the OLD lines) is
+        // dropped. Never carry a stale selection across a content change.
+        self.selection_anchor = None;
     }
 
     fn cur_line(&self) -> &str {
@@ -697,11 +712,97 @@ impl EditorState {
         self.message = Some((Instant::now(), msg.into()));
     }
 
+    // ── Selection (plan §2A, contracts C5/C7) ───────────────────────────────
+
+    /// Current caret as a [`Pos`] (the selection's moving head).
+    fn caret(&self) -> Pos {
+        Pos {
+            line: self.cy,
+            col: self.cx,
+        }
+    }
+
+    /// The active selection, if any: anchor (stored) → head (caret). `None` when
+    /// no anchor is set OR the anchor equals the caret (an empty selection is
+    /// not a selection — C5). Reconstructed on demand so head == caret always.
+    fn selection(&self) -> Option<Selection> {
+        let anchor = self.selection_anchor?;
+        let sel = Selection {
+            anchor,
+            head: self.caret(),
+        };
+        (!sel.is_empty()).then_some(sel)
+    }
+
+    /// Start a selection at the caret (no-op if one is already active). The
+    /// anchor is grapheme-snapped (C7) so a selection begun with the caret
+    /// parked inside a multi-code-point grapheme still anchors on a boundary.
+    fn ensure_selection(&mut self) {
+        if self.selection_anchor.is_none() {
+            let mut anchor = self.caret();
+            if let Some(line) = self.lines.get(anchor.line) {
+                anchor.col = snap_to_grapheme_start(line, anchor.col);
+            }
+            self.selection_anchor = Some(anchor);
+        }
+    }
+
+    /// Drop the selection (Esc, plain move, mode switch, destructive key).
+    fn clear_selection(&mut self) {
+        self.selection_anchor = None;
+    }
+
+    /// Snap the caret (selection head) to the start of its grapheme cluster on
+    /// the current line. Applied after every Select* move so selection
+    /// endpoints land on grapheme boundaries (C7).
+    fn snap_head_to_grapheme(&mut self) {
+        if let Some(line) = self.lines.get(self.cy) {
+            self.cx = snap_to_grapheme_start(line, self.cx);
+        }
+    }
+
+    /// Extend the selection head by one cursor move: ensure an anchor exists,
+    /// move the caret the same way a plain move would, then grapheme-snap the
+    /// landing (C7). The anchor is untouched, so the selection grows/shrinks
+    /// toward the moving caret.
+    fn extend_selection(&mut self, code: KeyCode) {
+        self.ensure_selection();
+        self.move_cursor(code);
+        self.snap_head_to_grapheme();
+    }
+
+    /// Select the entire buffer (Ctrl+A). Anchor at (0,0); head (= caret) at the
+    /// last char of the last line, grapheme-snapped. Empty buffer → empty
+    /// selection (renders as nothing, per C5).
+    fn select_all(&mut self) {
+        let last = self.lines.len().saturating_sub(1);
+        let last_len = self.lines.get(last).map_or(0, |l| char_count(l.as_str()));
+        self.selection_anchor = Some(Pos { line: 0, col: 0 });
+        self.cy = last;
+        self.cx = last_len;
+        self.snap_head_to_grapheme();
+    }
+
     /// Apply an App-free edit action directly to the buffer. App-dependent
     /// commands (save, paste, image-token, copy/cut, enter→image) are handled
     /// in [`dispatch_edit`] BEFORE this is reached. Split out so the editor
     /// mutation path is unit-testable without a full `App`.
     fn apply_action(&mut self, action: Action) {
+        // C6 (centralized replace-on-type, wired fully in P4): until then, a
+        // destructive/insert key with an active selection just DISMISSES it
+        // rather than silently mutating past it. The real delete-range /
+        // type-over-replaces behavior arrives with delete_range in P4; this
+        // guard is the safe stepping stone so a selection is never lost in a
+        // confusing half-state. Plain-move keys (handled below) also clear.
+        if self.selection().is_some()
+            && matches!(
+                action,
+                Action::InsertChar(_) | Action::Backspace | Action::Tab | Action::DeleteForward
+            )
+        {
+            self.clear_selection();
+            return;
+        }
         match action {
             Action::InsertChar(c) => self.insert_char(c),
             Action::Backspace => self.backspace(),
@@ -709,17 +810,42 @@ impl EditorState {
                 self.insert_char(' ');
                 self.insert_char(' ');
             }
-            Action::MoveLeft => self.move_cursor(KeyCode::Left),
-            Action::MoveRight => self.move_cursor(KeyCode::Right),
-            Action::MoveUp => self.move_cursor(KeyCode::Up),
-            Action::MoveDown => self.move_cursor(KeyCode::Down),
-            Action::MoveHome => self.move_cursor(KeyCode::Home),
-            Action::MoveEnd => self.move_cursor(KeyCode::End),
-            // Selection / clear / forward-delete / copy/cut / word-motion are
-            // wired in P2/P4/P5. They resolve to a real action here (so bindings
-            // + config are valid from P0) but mutate nothing until their phase.
-            // The App-dependent actions never reach apply_action (dispatch_edit
-            // handles them first); listing them via `_` keeps this exhaustive.
+            // Plain motion: clear any selection, then move (C5).
+            Action::MoveLeft => {
+                self.clear_selection();
+                self.move_cursor(KeyCode::Left);
+            }
+            Action::MoveRight => {
+                self.clear_selection();
+                self.move_cursor(KeyCode::Right);
+            }
+            Action::MoveUp => {
+                self.clear_selection();
+                self.move_cursor(KeyCode::Up);
+            }
+            Action::MoveDown => {
+                self.clear_selection();
+                self.move_cursor(KeyCode::Down);
+            }
+            Action::MoveHome => {
+                self.clear_selection();
+                self.move_cursor(KeyCode::Home);
+            }
+            Action::MoveEnd => {
+                self.clear_selection();
+                self.move_cursor(KeyCode::End);
+            }
+            // Selection motion: anchor fixed, head extends with the caret (C7).
+            Action::SelectLeft => self.extend_selection(KeyCode::Left),
+            Action::SelectRight => self.extend_selection(KeyCode::Right),
+            Action::SelectUp => self.extend_selection(KeyCode::Up),
+            Action::SelectDown => self.extend_selection(KeyCode::Down),
+            Action::SelectHome => self.extend_selection(KeyCode::Home),
+            Action::SelectEnd => self.extend_selection(KeyCode::End),
+            Action::SelectAll => self.select_all(),
+            Action::ClearSelection => self.clear_selection(),
+            // DeleteForward (reached only with no selection, else cleared above)
+            // is wired with copy/cut/word-motion in P4/P5.
             _ => {}
         }
     }
@@ -1245,13 +1371,19 @@ fn render_editor(app: &App, state: &mut EditorState, frame: &mut Frame, area: Re
     // line's screen row is exact and the cursor column maps cleanly to a display
     // column. Image-embed tokens render as an inline `[image: name]` glyph
     // (§2.4 "editor surface"); the buffer itself is untouched (transparent
-    // editing — the real token is what gets saved).
+    // editing — the real token is what gets saved). The active selection (if
+    // any) is reconstructed once and rendered as reverse video per line (C4);
+    // `line_idx` is ABSOLUTE (scroll offset + visible index) so selection line
+    // ranges line up with the buffer, not the viewport.
+    let selection = state.selection();
+    let width = inner.width as usize;
     let visible: Vec<Line> = state
         .lines
         .iter()
         .skip(state.scroll)
         .take(height)
-        .map(|l| render_line(app, l))
+        .enumerate()
+        .map(|(i, l)| render_line(app, l, state.scroll + i, selection, width))
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, inner);
@@ -1345,6 +1477,113 @@ fn char_to_byte(s: &str, char_idx: usize) -> usize {
         .unwrap_or_else(|| s.len())
 }
 
+// ── Selection (CLAUDE.md §3.1, contracts C1/C5/C7) ──────────────────────────
+
+/// A buffer position: `line` indexes `EditorState::lines`, `col` is a CHAR
+/// index into that line (not bytes, not display columns — C1). Selection
+/// endpoints are grapheme-snapped ([`snap_to_grapheme_start`]) so a boundary
+/// never splits a grapheme (C7). Derives `Ord` in (line, col) order = document
+/// order for the line-by-line buffer model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+struct Pos {
+    line: usize,
+    col: usize,
+}
+
+/// A text selection: `anchor` is where it began, `head` is the moving caret end.
+/// Direction is NOT stored (DRY) — [`Selection::normalized`] returns
+/// `(start, end)` in document order on demand. An empty selection
+/// (`anchor == head`) means "no selection".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Selection {
+    anchor: Pos,
+    head: Pos,
+}
+
+impl Selection {
+    /// `(start, end)` in document order, regardless of which end the user
+    /// dragged toward. Used by render + delete/copy so they never store or
+    /// branch on direction.
+    fn normalized(&self) -> (Pos, Pos) {
+        if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.anchor == self.head
+    }
+}
+
+/// Which part of a given line is inside `selection` (for reverse-video render).
+/// `Full` = the whole line (incl. an empty line inside a multiline selection,
+/// which renders a full-width highlight bar). `Range(a, b)` = chars `[a, b)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineSel {
+    None,
+    Full,
+    Range(usize, usize),
+}
+
+/// Project a selection onto one line (`line_idx`, `len` = char count of that
+/// line). `None` selection / empty selection → no highlight.
+fn line_selection(line_idx: usize, len: usize, selection: Option<Selection>) -> LineSel {
+    let Some(sel) = selection.filter(|s| !s.is_empty()) else {
+        return LineSel::None;
+    };
+    let (start, end) = sel.normalized();
+    if line_idx < start.line || line_idx > end.line {
+        return LineSel::None;
+    }
+    if start.line == end.line {
+        // Single line: [start.col, end.col). Whole-line if it spans the line.
+        if start.col == 0 && end.col >= len {
+            LineSel::Full
+        } else {
+            LineSel::Range(start.col, end.col)
+        }
+    } else if line_idx == start.line {
+        // First line of a multi-line selection: from start.col to EOL.
+        if start.col == 0 {
+            LineSel::Full
+        } else {
+            LineSel::Range(start.col, len)
+        }
+    } else if line_idx == end.line {
+        // Last line: from BOL to end.col.
+        if end.col >= len {
+            LineSel::Full
+        } else {
+            LineSel::Range(0, end.col)
+        }
+    } else {
+        // Strictly between → entire line.
+        LineSel::Full
+    }
+}
+
+/// Snap a char index to the START of its grapheme cluster (C7). Selection
+/// endpoints pass through this so a multi-code-point grapheme (ZWJ emoji like
+/// 👨‍👩‍👧, or `é` = e + U+0301 combining acute) is never split — the boundary is
+/// always at a grapheme edge. `char_idx` past the end clamps to `char_count`.
+fn snap_to_grapheme_start(line: &str, char_idx: usize) -> usize {
+    let target = char_idx.min(char_count(line));
+    let mut cursor = 0usize; // running char offset
+    for grapheme in line.graphemes(true) {
+        let len = grapheme.chars().count();
+        if cursor == target {
+            return target; // exactly on a boundary
+        }
+        if cursor + len > target {
+            return cursor; // target is inside this grapheme → snap to its start
+        }
+        cursor += len;
+    }
+    target
+}
+
 /// Inline image-glyph render (`CLAUDE.md` §2.4 "editor surface"): each embed
 /// token shows as `[image: name]` while the buffer keeps the real Markdown.
 fn glyph_for(name: &str) -> String {
@@ -1381,25 +1620,156 @@ fn glyph_spans(app: &App, line: &str) -> Vec<(usize, usize, String)> {
     spans
 }
 
-/// Render a buffer line with image tokens shown as inline `[image: name]` glyphs.
-fn render_line(app: &App, line: &str) -> Line<'static> {
+/// Render a buffer line with image tokens shown as inline `[image: name]` glyphs,
+/// and the active selection in reverse video (C4). `line_idx` is the ABSOLUTE
+/// line index (so `line_selection` can compare against selection line ranges);
+/// `selection` is the reconstructed editor selection; `width` is the viewport
+/// width (a blank line inside a multiline selection renders a full-width
+/// highlight bar — C4).
+fn render_line(
+    app: &App,
+    line: &str,
+    line_idx: usize,
+    selection: Option<Selection>,
+    width: usize,
+) -> Line<'static> {
     let spans = glyph_spans(app, line);
-    if spans.is_empty() {
-        return Line::from(line.to_string());
-    }
+    let ls = line_selection(line_idx, char_count(line), selection);
+    render_line_from_spans(line, &spans, ls, width)
+}
+
+/// Kind of a render segment: a raw text slice from the buffer, or a substituted
+/// image glyph (which does NOT echo the buffer bytes — it shows `[image: name]`).
+#[derive(Debug, Clone)]
+enum SegKind {
+    Text,
+    Glyph(String),
+}
+
+/// One contiguous render segment with both its BYTE range (to slice the buffer
+/// for `Text`) and its CHAR range (to test selection overlap — selection cols
+/// are char indices, C1). Kept private to [`render_line_from_spans`].
+struct Seg {
+    byte_a: usize,
+    byte_b: usize,
+    char_a: usize,
+    char_b: usize,
+    kind: SegKind,
+}
+
+/// Pure core of [`render_line`] (no `App` → unit-testable). Builds the line's
+/// spans with image glyphs in magenta and the selection's char range on this
+/// line in reverse video, per C4: glyph ranges are atomic (any overlap → whole
+/// glyph reverses); text is split at the selection boundaries; a selected BLANK
+/// line renders a full-width reversed bar so it's visible inside a multiline
+/// selection.
+fn render_line_from_spans(
+    line: &str,
+    spans: &[(usize, usize, String)],
+    ls: LineSel,
+    width: usize,
+) -> Line<'static> {
+    let reverse = Style::default().add_modifier(Modifier::REVERSED);
     let glyph_style = Style::default().fg(Color::Magenta);
-    let mut out: Vec<Span<'static>> = Vec::new();
-    let mut cur = 0usize;
+    let glyph_style_sel = glyph_style.patch(Style::default().add_modifier(Modifier::REVERSED));
+
+    // Selection char-range on this line. `sel_b = usize::MAX` makes the
+    // "to-EOL" / Full cases overlap-any-end without special-casing.
+    let sel_active = !matches!(ls, LineSel::None);
+    let (sel_a, sel_b) = match ls {
+        LineSel::None => (1usize, 0usize), // a > b → never overlaps
+        LineSel::Range(a, b) => (a, b),
+        LineSel::Full => (0, usize::MAX),
+    };
+    let overlaps = |c_a: usize, c_b: usize| c_a < sel_b && c_b > sel_a;
+
+    // 1. Build segments (text gaps + glyphs) in document order with char ranges.
+    let mut segs: Vec<Seg> = Vec::new();
+    let mut cur_byte = 0usize;
+    let mut char_cursor = 0usize;
     for (start, end, glyph) in spans {
-        if start > cur {
-            out.push(Span::raw(line[cur..start].to_string()));
+        if *start > cur_byte {
+            let text = &line[cur_byte..*start];
+            let n = char_count(text);
+            segs.push(Seg {
+                byte_a: cur_byte,
+                byte_b: *start,
+                char_a: char_cursor,
+                char_b: char_cursor + n,
+                kind: SegKind::Text,
+            });
+            char_cursor += n;
+            // `cur_byte` is advanced to `*end` below; the gap up to `*start`
+            // is consumed by this segment, so no separate update is needed.
         }
-        out.push(Span::styled(glyph, glyph_style));
-        cur = end;
+        let n = char_count(&line[*start..*end]);
+        segs.push(Seg {
+            byte_a: *start,
+            byte_b: *end,
+            char_a: char_cursor,
+            char_b: char_cursor + n,
+            kind: SegKind::Glyph(glyph.clone()),
+        });
+        char_cursor += n;
+        cur_byte = *end;
     }
-    if cur < line.len() {
-        out.push(Span::raw(line[cur..].to_string()));
+    if cur_byte < line.len() {
+        let text = &line[cur_byte..line.len()];
+        let n = char_count(text);
+        segs.push(Seg {
+            byte_a: cur_byte,
+            byte_b: line.len(),
+            char_a: char_cursor,
+            char_b: char_cursor + n,
+            kind: SegKind::Text,
+        });
     }
+
+    // 2. Style each segment against the selection.
+    let mut out: Vec<Span<'static>> = Vec::new();
+    for seg in &segs {
+        match &seg.kind {
+            SegKind::Glyph(g) => {
+                let style = if sel_active && overlaps(seg.char_a, seg.char_b) {
+                    glyph_style_sel
+                } else {
+                    glyph_style
+                };
+                out.push(Span::styled(g.clone(), style));
+            }
+            SegKind::Text => {
+                let text = &line[seg.byte_a..seg.byte_b];
+                let seg_chars = seg.char_b - seg.char_a;
+                if !sel_active || !overlaps(seg.char_a, seg.char_b) {
+                    out.push(Span::raw(text.to_string()));
+                    continue;
+                }
+                // Split this text segment at the selection boundaries (char
+                // offsets within the segment), translating to bytes (C1).
+                let local_a = sel_a.saturating_sub(seg.char_a).min(seg_chars);
+                let local_b = sel_b.saturating_sub(seg.char_a).min(seg_chars);
+                let b_lo = char_to_byte(text, local_a);
+                let b_hi = char_to_byte(text, local_b);
+                if local_a > 0 {
+                    out.push(Span::raw(text[..b_lo].to_string()));
+                }
+                if local_b > local_a {
+                    out.push(Span::styled(text[b_lo..b_hi].to_string(), reverse));
+                }
+                if local_b < seg_chars {
+                    out.push(Span::raw(text[b_hi..].to_string()));
+                }
+            }
+        }
+    }
+
+    // 3. A selected BLANK line has no segments — render a full-width reversed
+    // bar so it's visible inside a multiline selection (C4).
+    if out.is_empty() && sel_active && matches!(ls, LineSel::Full) {
+        let bar = " ".repeat(width.max(1));
+        out.push(Span::styled(bar, reverse));
+    }
+
     Line::from(out)
 }
 
@@ -1887,5 +2257,325 @@ mod tests {
         assert_eq!(s.body(), ">hi");
         s.apply_action(Action::Tab); // two spaces
         assert_eq!(s.body(), ">  hi");
+    }
+
+    // ── Selection: grapheme snap (P1, contract C7) ─────────────────────────
+
+    /// `snap_to_grapheme_start` never lands inside a multi-code-point grapheme:
+    /// a combining mark or a ZWJ-emoji sequence collapses to its leading
+    /// boundary. CJK / ASCII chars are single-code-point graphemes, so snap is
+    /// the identity there.
+    #[test]
+    fn snap_to_grapheme_boundaries() {
+        // ZWJ family emoji 👨‍👩‍👧 = 5 scalar values, 1 grapheme → any interior
+        // index snaps to 0; only index 0 and 5 (past-end) are valid boundaries.
+        let zwj = "👨‍👩‍👧";
+        assert_eq!(char_count(zwj), 5, "fixture: 5 code points");
+        assert_eq!(snap_to_grapheme_start(zwj, 0), 0);
+        assert_eq!(
+            snap_to_grapheme_start(zwj, 1),
+            0,
+            "interior snaps to cluster start"
+        );
+        assert_eq!(snap_to_grapheme_start(zwj, 3), 0);
+        assert_eq!(
+            snap_to_grapheme_start(zwj, 5),
+            5,
+            "past-end boundary is valid"
+        );
+        assert_eq!(
+            snap_to_grapheme_start(zwj, 99),
+            5,
+            "out-of-range clamps to char_count"
+        );
+
+        // Combining acute: "e" + U+0301 = 2 code points, 1 grapheme.
+        let acc = "e\u{0301}";
+        assert_eq!(char_count(acc), 2);
+        assert_eq!(
+            snap_to_grapheme_start(acc, 1),
+            0,
+            "between base + combining snaps to base"
+        );
+
+        // CJK + ASCII are 1-code-point-per-grapheme → identity.
+        for (line, idx) in [("你好", 1usize), ("abc", 1usize), ("你好", 0usize)] {
+            assert_eq!(
+                snap_to_grapheme_start(line, idx),
+                idx,
+                "single-cp grapheme is identity"
+            );
+        }
+
+        // Mixed: a mid-line ZWJ emoji cluster absorbs interior snaps but leaves
+        // the surrounding ASCII boundaries alone. "ab" + 👨‍👩‍👧 + "cd".
+        let mixed = "ab👨‍👩‍👧cd";
+        assert_eq!(char_count(mixed), 9);
+        assert_eq!(
+            snap_to_grapheme_start(mixed, 2),
+            2,
+            "emoji cluster start is a boundary"
+        );
+        assert_eq!(
+            snap_to_grapheme_start(mixed, 5),
+            2,
+            "mid-emoji snaps to cluster start"
+        );
+        assert_eq!(
+            snap_to_grapheme_start(mixed, 7),
+            7,
+            "'c' after emoji is a boundary"
+        );
+    }
+
+    // ── Selection: normalized + per-line projection (P1) ────────────────────
+
+    #[test]
+    fn selection_normalized_forward_and_backward() {
+        let fwd = Selection {
+            anchor: Pos { line: 0, col: 2 },
+            head: Pos { line: 0, col: 5 },
+        };
+        assert_eq!(
+            fwd.normalized(),
+            (Pos { line: 0, col: 2 }, Pos { line: 0, col: 5 })
+        );
+        let bwd = Selection {
+            anchor: Pos { line: 0, col: 5 },
+            head: Pos { line: 0, col: 2 },
+        };
+        // Backward drag still yields document-order (start,end) — direction is
+        // never stored (DRY, C5).
+        assert_eq!(bwd.normalized(), fwd.normalized());
+        let multi = Selection {
+            anchor: Pos { line: 3, col: 4 },
+            head: Pos { line: 1, col: 1 },
+        };
+        assert_eq!(
+            multi.normalized(),
+            (Pos { line: 1, col: 1 }, Pos { line: 3, col: 4 })
+        );
+        assert!(Selection {
+            anchor: Pos::default(),
+            head: Pos::default()
+        }
+        .is_empty());
+    }
+
+    /// `line_selection` projects a selection onto each line's highlight: Full
+    /// (whole line / blank line in a multiline selection), Range(a,b), or None.
+    #[test]
+    fn line_selection_projects_to_each_line() {
+        let s = |a_line, a_col, h_line, h_col| Selection {
+            anchor: Pos {
+                line: a_line,
+                col: a_col,
+            },
+            head: Pos {
+                line: h_line,
+                col: h_col,
+            },
+        };
+        // No / empty selection → no highlight.
+        assert_eq!(line_selection(0, 5, None), LineSel::None);
+        assert_eq!(
+            line_selection(0, 5, Some(s(0, 2, 0, 2))),
+            LineSel::None,
+            "empty selection (anchor==head) is not a highlight"
+        );
+        // Single-line partial / whole.
+        assert_eq!(
+            line_selection(0, 5, Some(s(0, 1, 0, 3))),
+            LineSel::Range(1, 3)
+        );
+        assert_eq!(line_selection(0, 5, Some(s(0, 0, 0, 5))), LineSel::Full);
+        // Lines outside the range.
+        assert_eq!(line_selection(9, 5, Some(s(0, 0, 2, 3))), LineSel::None);
+
+        // Multiline selection over lines of len [5, 0, 6] starting mid line-0:
+        // anchor (0,2) → head (2,4).
+        let multi = s(0, 2, 2, 4);
+        assert_eq!(
+            line_selection(0, 5, Some(multi)),
+            LineSel::Range(2, 5),
+            "first line: start.col→EOL"
+        );
+        assert_eq!(
+            line_selection(1, 0, Some(multi)),
+            LineSel::Full,
+            "blank middle line → full bar"
+        );
+        assert_eq!(
+            line_selection(2, 6, Some(multi)),
+            LineSel::Range(0, 4),
+            "last line: BOL→end.col"
+        );
+        assert_eq!(
+            line_selection(3, 6, Some(multi)),
+            LineSel::None,
+            "line after selection"
+        );
+    }
+
+    // ── Selection: reverse-video render (P2, contract C4) ──────────────────
+    //
+    // The full `render(app, state, frame)` path needs a full `App` (8+ adapter
+    // deps) and is left to the integration harness — same boundary the §9
+    // small-terminal guard test uses. The reverse-video LOGIC lives entirely in
+    // the App-free `render_line_from_spans` core, which we exercise here by
+    // inspecting the returned spans' styles.
+
+    /// Concatenate the contents of every reversed span on the line.
+    fn reversed_contents(line: &Line) -> String {
+        line.spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::REVERSED))
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn render_reverses_partial_text_selection() {
+        // "hello", select cols [1,3) = "el" → reversed; the rest stays raw.
+        let line = render_line_from_spans("hello", &[], LineSel::Range(1, 3), 10);
+        assert_eq!(reversed_contents(&line), "el");
+        let all: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(all, "hello");
+    }
+
+    #[test]
+    fn render_reverses_whole_line_and_blank_bar() {
+        // Full line → all text reversed.
+        let full = render_line_from_spans("hi", &[], LineSel::Full, 10);
+        assert_eq!(reversed_contents(&full), "hi");
+        // Blank line in a multiline selection → full-width reversed bar (C4).
+        let bar = render_line_from_spans("", &[], LineSel::Full, 5);
+        assert_eq!(
+            reversed_contents(&bar),
+            "     ",
+            "blank selected line pads to width"
+        );
+    }
+
+    /// An image glyph is ATOMIC under selection: any overlap reverses the whole
+    /// `[image: …]` token (C4), never a partial slice of its glyph text.
+    #[test]
+    fn render_glyph_is_atomic_under_selection() {
+        // Glyph covers buffer chars [1,4) ("bcd" → shown as "[img]"); select only
+        // char [2,3) — strictly inside the glyph. The whole glyph reverses, the
+        // leading "a" (char 0, outside the range) does not.
+        let spans = [(1usize, 4usize, "[img]".to_string())];
+        let line = render_line_from_spans("abcdef", &spans, LineSel::Range(2, 3), 10);
+        let glyph_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "[img]")
+            .expect("glyph present");
+        assert!(
+            glyph_span.style.add_modifier.contains(Modifier::REVERSED),
+            "whole glyph reverses on partial overlap"
+        );
+        let a_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "a")
+            .expect("leading text present");
+        assert!(
+            !a_span.style.add_modifier.contains(Modifier::REVERSED),
+            "char outside selection is not reversed"
+        );
+    }
+
+    // ── Selection: editor state lifecycle (P2, contracts C5/C7) ────────────
+
+    #[test]
+    fn extend_selection_anchors_then_moves_head() {
+        let mut s = state_from_body("hello");
+        assert!(s.selection().is_none());
+        // SelectRight from col 0 → anchor (0,0); head (the caret) moves to col 1.
+        s.apply_action(Action::SelectRight);
+        let sel = s.selection().expect("selection active");
+        assert_eq!(sel.anchor, Pos { line: 0, col: 0 });
+        assert_eq!(sel.head, Pos { line: 0, col: 1 });
+    }
+
+    #[test]
+    fn backward_selection_normalizes_for_render() {
+        // Start at end, drag left: head ends behind anchor → normalized still
+        // ascending (what render + delete rely on, C5).
+        let mut s = state_from_body("hello");
+        s.apply_action(Action::MoveEnd);
+        assert_eq!(s.cx, 5);
+        s.apply_action(Action::SelectLeft);
+        let sel = s.selection().expect("selection active");
+        assert_eq!(sel.anchor, Pos { line: 0, col: 5 });
+        assert_eq!(sel.head, Pos { line: 0, col: 4 });
+        let (start, end) = sel.normalized();
+        assert!(start <= end, "normalized is document order");
+        assert_eq!((start.col, end.col), (4, 5));
+    }
+
+    #[test]
+    fn plain_move_and_destructive_key_clear_selection() {
+        let mut s = state_from_body("hello");
+        s.apply_action(Action::SelectRight);
+        assert!(s.selection().is_some());
+        // A plain move clears it.
+        s.apply_action(Action::MoveLeft);
+        assert!(s.selection().is_none());
+        // Re-select, then a destructive key clears WITHOUT mutating the buffer
+        // (P2 stepping stone; the real delete-range/type-over arrives in P4, C6).
+        s.apply_action(Action::SelectRight);
+        assert!(s.selection().is_some());
+        let before = s.body();
+        s.apply_action(Action::InsertChar('z'));
+        assert!(s.selection().is_none(), "insert clears selection");
+        assert_eq!(
+            s.body(),
+            before,
+            "P2: insert dismisses selection but does not yet type-over"
+        );
+    }
+
+    #[test]
+    fn clear_selection_action_drops_selection() {
+        let mut s = state_from_body("hello");
+        s.apply_action(Action::SelectRight);
+        s.apply_action(Action::ClearSelection); // Esc
+        assert!(s.selection().is_none());
+    }
+
+    #[test]
+    fn select_all_selects_entire_buffer() {
+        let mut s = state_from_body("ab\ncd");
+        s.apply_action(Action::SelectAll);
+        let sel = s.selection().expect("select-all active");
+        assert_eq!(sel.anchor, Pos { line: 0, col: 0 });
+        assert_eq!(
+            sel.head,
+            Pos { line: 1, col: 2 },
+            "head at last char of last line"
+        );
+    }
+
+    #[test]
+    fn select_all_empty_buffer_is_empty_selection() {
+        let mut s = state_from_body("");
+        s.apply_action(Action::SelectAll);
+        // Empty buffer → head==anchor → not a visible selection (C5).
+        assert!(s.selection().is_none());
+    }
+
+    #[test]
+    fn reload_drops_active_selection() {
+        let mut s = state_from_body("hello");
+        s.apply_action(Action::SelectRight);
+        assert!(s.selection().is_some());
+        // reload swaps the buffer; the selection (indexed into the old lines)
+        // must not survive (C5).
+        let path = RelativeNotePath::new("Scratch.md").expect("test path");
+        let doc = NoteDocument::from_raw(path, "fresh", 0);
+        s.reload(doc);
+        assert!(s.selection().is_none());
     }
 }
