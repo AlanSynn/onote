@@ -67,7 +67,7 @@ use ratatui::Terminal as RatatuiTerminal;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 
-use crate::application::ops::SaveOutcome;
+use crate::application::ops::{LinkResolution, SaveOutcome};
 use crate::application::App;
 use crate::domain::note::NoteDocument;
 use crate::domain::session::ExternalChange;
@@ -455,7 +455,7 @@ fn handle_edit_mode(app: &App, state: &mut EditorState, key: KeyEvent) -> Result
         if action == Action::Enter && state.explorer.selected_kind() == Some(EntryKind::Note) {
             if let Some(rel_str) = state.explorer.selected_rel_path().map(str::to_owned) {
                 let rel = RelativeNotePath::from_user(&rel_str)?;
-                return open_from_explorer(app, state, &rel);
+                return open_relative(app, state, &rel);
             }
         }
         apply_explorer_action(state, action);
@@ -759,6 +759,8 @@ fn dispatch_edit(app: &App, state: &mut EditorState, action: Action) -> Result<C
         Action::PasteImage => paste_image(app, state),
         Action::Reload => reload(app, state),
         Action::ConflictCopy => conflict_copy(app, state),
+        // ^G follows the [[wikilink]] / Markdown link under the caret (Spike 8).
+        Action::OpenLink => open_link(app, state),
         // ^D deletes the image token under the cursor (Spike 3).
         Action::DeleteImageToken => delete_image_token(app, state),
         // Enter on an image line opens the preview modal; otherwise newline.
@@ -1190,20 +1192,42 @@ fn reload(app: &App, state: &mut EditorState) -> Result<Control> {
 }
 
 /// Open the note selected in the Explorer (Enter on a note row, Spike 7).
-/// Mirrors the fuzzy-open path: load via the use case, swap the editor buffer,
-/// focus the editor. The Explorer stays visible; selection is already on the
-/// opened note (the row Enter acted on), and the P7.3 current-note marker
-/// (rendered off `app.current_note()`) confirms it from the editor's side.
-fn open_from_explorer(
-    app: &App,
-    state: &mut EditorState,
-    rel: &RelativeNotePath,
-) -> Result<Control> {
+/// Open a note by relative path into the editor: load via the use case, swap
+/// the buffer, focus the editor, toast. Shared by the Explorer's Enter-on-note
+/// and the Spike-8 link-follow (`Ctrl+G`) — hence the generic name.
+fn open_relative(app: &App, state: &mut EditorState, rel: &RelativeNotePath) -> Result<Control> {
     let doc = app.open_note(rel)?;
     state.reload(doc);
     state.active_pane = ActivePane::Editor;
     state.toast(format!("opened {}", rel.as_str()));
     Ok(Control::Continue)
+}
+
+/// Spike 8: follow the note link under the caret (`Ctrl+G`). Resolves the
+/// `[[wikilink]]` / Markdown-link target; a unique match opens it (reusing the
+/// Explorer open path), and an ambiguous/unknown match falls back to the fuzzy
+/// picker seeded with the target so the user disambiguates (`CLAUDE.md` §8). No
+/// link under the caret is a harmless toast.
+fn open_link(app: &App, state: &mut EditorState) -> Result<Control> {
+    let target = match state.link_under_caret() {
+        Some(t) => t,
+        None => {
+            state.toast("no note link under caret");
+            return Ok(Control::Continue);
+        }
+    };
+    match app.resolve_note_link(&target)? {
+        LinkResolution::Found(rel) => open_relative(app, state, &rel),
+        // Ambiguous (several notes share the title) or unknown → let the user
+        // pick: seed the fuzzy picker with the link target.
+        LinkResolution::Ambiguous(_) | LinkResolution::NotFound => {
+            state.clear_selection();
+            state.mode = Mode::FuzzyOpen;
+            state.fuzzy_query = target;
+            refresh_fuzzy(app, state)?;
+            Ok(Control::Continue)
+        }
+    }
 }
 
 fn conflict_copy(app: &App, state: &mut EditorState) -> Result<Control> {

@@ -147,6 +147,15 @@ impl EditorState {
         self.lines.get(self.cy).map(|s| s.as_str()).unwrap_or("")
     }
 
+    /// Spike 8: the note-link target under the caret, if any (`[[wikilink]]` or
+    /// `[label](note)` on the current line). `None` when the caret isn't on a
+    /// link span. Drives the `OpenLink` action (Ctrl+G) — follow a link without a
+    /// mouse. Delegates to the pure `link_target_at` so the scanning logic is
+    /// unit-testable without an `EditorState`.
+    pub(super) fn link_under_caret(&self) -> Option<String> {
+        link_target_at(self.cur_line(), self.cx)
+    }
+
     pub(super) fn mark_dirty(&mut self) {
         if self.status != SyncStatus::Conflict {
             self.status = SyncStatus::Dirty;
@@ -729,6 +738,95 @@ pub(super) fn snap_to_grapheme_start(line: &str, char_idx: usize) -> usize {
 enum WordDir {
     Left,
     Right,
+}
+
+// ── Spike 8: note-link detection under the caret (`[[wikilink]]` / md-link) ──
+
+/// If `col` (a char index) falls inside a note-link span in `line`, return that
+/// link's target (`CLAUDE.md` §1.2). Pure + allocation-free unless it returns
+/// `Some`, so the scan is unit-testable without an `EditorState`.
+///
+/// - `[[target]]` / `[[target|alias]]` → `target` (text before any `|`).
+/// - `![[embed]]` is skipped (an image embed, not a note link).
+/// - `[label](target)` → `target`, but external `scheme:` URLs are skipped and a
+///   trailing `#fragment`/`?query` is stripped (parity with `extract_note_links`).
+///
+/// The caret is "on" a span when `col ∈ [start, end)` in char space.
+fn link_target_at(line: &str, col: usize) -> Option<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        // `[[ wikilink ]]` — but not `![[` (an image embed).
+        if chars[i] == '[' && chars.get(i + 1) == Some(&'[') && (i == 0 || chars[i - 1] != '!') {
+            if let Some(close) = find_seq(&chars, i + 2, "]]") {
+                let span_end = close + 2;
+                if col_in(col, i, span_end) {
+                    let inner: String = chars[i + 2..close].iter().collect();
+                    let target = inner.split('|').next().unwrap_or("").trim();
+                    if !target.is_empty() {
+                        return Some(target.to_string());
+                    }
+                }
+                i = span_end;
+                continue;
+            }
+        }
+        // `[label](target)` — a single `[`, not `[[`.
+        if chars[i] == '[' && chars.get(i + 1) != Some(&'[') {
+            if let Some(bracket) = find_char(&chars, i + 1, ']') {
+                if chars.get(bracket + 1) == Some(&'(') {
+                    if let Some(paren) = find_char(&chars, bracket + 2, ')') {
+                        let span_end = paren + 1;
+                        if col_in(col, i, span_end) {
+                            let raw: String = chars[bracket + 2..paren].iter().collect();
+                            if let Some(t) = strip_link_target(&raw) {
+                                return Some(t);
+                            }
+                        }
+                        i = span_end;
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `col ∈ [start, end)`.
+fn col_in(col: usize, start: usize, end: usize) -> bool {
+    col >= start && col < end
+}
+
+/// First index at/after `from` whose chars begin `seq`; `None` if absent.
+fn find_seq(chars: &[char], from: usize, seq: &str) -> Option<usize> {
+    let needle: Vec<char> = seq.chars().collect();
+    (from..chars.len()).find(|&start| {
+        start + needle.len() <= chars.len() && chars[start..start + needle.len()] == needle[..]
+    })
+}
+
+/// First index at/after `from` equal to `target`; `None` if absent.
+fn find_char(chars: &[char], from: usize, target: char) -> Option<usize> {
+    (from..chars.len()).find(|&i| chars[i] == target)
+}
+
+/// Normalize a Markdown-link target: trim, drop `#fragment`/`?query`, and reject
+/// external `scheme:` URLs. Returns `None` if it isn't a vault note link.
+fn strip_link_target(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    // A relative vault path never contains ':'; `scheme:` (http://, mailto:, …)
+    // marks an external URL.
+    if trimmed.is_empty() || trimmed.contains(':') {
+        return None;
+    }
+    let bare = trimmed.split(['#', '?']).next().unwrap_or("").trim();
+    if bare.is_empty() {
+        None
+    } else {
+        Some(bare.to_string())
+    }
 }
 
 /// Classification used by [`word_boundary`] to group runs. Whitespace, word
@@ -1502,5 +1600,64 @@ mod tests {
         assert_eq!(snap_grapheme_dir(line, 2, WordDir::Right), 2);
         // EOL (4) is a boundary.
         assert_eq!(snap_grapheme_dir(line, 4, WordDir::Right), 4);
+    }
+
+    // ── Spike 8: link_target_at ─────────────────────────────────────────────
+
+    #[test]
+    fn link_target_at_wikilink_under_caret() {
+        // "see [[Robot]] now"  →  [[ ]] spans cols 4..12.
+        let line = "see [[Robot]] now";
+        assert_eq!(link_target_at(line, 4), Some("Robot".to_string()));
+        assert_eq!(link_target_at(line, 11), Some("Robot".to_string())); // last ']' - 1
+        assert_eq!(link_target_at(line, 0), None, "before the link");
+        assert_eq!(link_target_at(line, 13), None, "after the link");
+    }
+
+    #[test]
+    fn link_target_at_strips_wikilink_alias() {
+        // [[Robot|the robot note]] → target is the text before '|'.
+        let line = "[[Robot|the robot note]]";
+        assert_eq!(link_target_at(line, 2), Some("Robot".to_string()));
+    }
+
+    #[test]
+    fn link_target_at_skips_image_embed() {
+        // ![[image.png]] is an embed, not a note link — never resolves.
+        let line = "![[_attachments/x.png]]";
+        assert_eq!(link_target_at(line, 3), None);
+    }
+
+    #[test]
+    fn link_target_at_markdown_link() {
+        // "go [see](Notes/r.md)" — the whole [..](..) span is clickable.
+        let line = "go [see](Notes/r.md)!";
+        assert_eq!(link_target_at(line, 3), Some("Notes/r.md".to_string()));
+        assert_eq!(link_target_at(line, 19), Some("Notes/r.md".to_string())); // inside target
+        assert_eq!(link_target_at(line, 0), None);
+    }
+
+    #[test]
+    fn link_target_at_skips_external_url() {
+        let line = "[web](https://example.com/x)";
+        assert_eq!(link_target_at(line, 0), None, "scheme: is not a note link");
+    }
+
+    #[test]
+    fn link_target_at_strips_fragment_and_query() {
+        assert_eq!(
+            link_target_at("[x](Robot.md#heading)", 0),
+            Some("Robot.md".to_string())
+        );
+        assert_eq!(
+            link_target_at("[x](Robot.md?q=1)", 0),
+            Some("Robot.md".to_string())
+        );
+    }
+
+    #[test]
+    fn link_target_at_no_link_returns_none() {
+        assert_eq!(link_target_at("plain text", 3), None);
+        assert_eq!(link_target_at("", 0), None);
     }
 }

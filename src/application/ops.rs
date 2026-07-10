@@ -170,6 +170,18 @@ impl App {
         if trimmed.is_empty() {
             return Ok(LinkResolution::NotFound);
         }
+        // A PATH-like target (Markdown `[label](Notes/x.md)`): try reading it as
+        // a vault-relative path first, before title matching. §3.1 confinement
+        // holds — `from_user` rejects escapes, and `read_note` routes through
+        // `RelativeNotePath::resolve_within`.
+        if trimmed.contains('/') || trimmed.to_ascii_lowercase().ends_with(".md") {
+            if let Ok(rel) = RelativeNotePath::from_user(trimmed) {
+                if self.deps().vault.read_note(&rel).is_ok() {
+                    return Ok(LinkResolution::Found(rel));
+                }
+            }
+        }
+        // A TITLE-like target (`[[wikilink]]`): exact case-insensitive title match.
         let exact: Vec<NoteSummary> = self
             .fuzzy(trimmed)?
             .into_iter()

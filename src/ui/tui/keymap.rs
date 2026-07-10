@@ -30,6 +30,9 @@ pub(super) enum Action {
     /// Toggle Explorer pane visibility + focus (`Ctrl+E`, Spike 7 P7.2).
     /// Pane-agnostic: works from either pane.
     ToggleExplorer,
+    /// Follow the note link under the caret (`Ctrl+G`, Spike 8) — opens the
+    /// `[[wikilink]]` / Markdown-link target. Editor-pane only (needs a caret).
+    OpenLink,
     // Plain editing.
     InsertChar(char),
     Enter,
@@ -135,6 +138,7 @@ impl KeymapRegistry {
             ('a', Action::SelectAll),
             ('x', Action::Cut),
             ('e', Action::ToggleExplorer),
+            ('g', Action::OpenLink),
         ] {
             m.insert(combo(Char(c), KeyModifiers::CONTROL), a);
         }
