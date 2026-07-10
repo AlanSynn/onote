@@ -16,7 +16,11 @@ use crate::domain::vault::RelativeNotePath;
 use super::keymap::{Action, KeymapRegistry};
 use super::{ImageOverlay, Mode, SyncStatus};
 
-pub struct EditorState {
+/// The editor's in-memory buffer + cursor/selection state. Constructed inside
+/// `tui::run` (mod.rs) and threaded through the handlers — never leaves the
+/// `ui::tui` module, so `pub(super)` (visible to the parent `ui::tui`) is the
+/// tightest correct visibility. `main.rs` only calls `tui::run`.
+pub(super) struct EditorState {
     pub(super) path: RelativeNotePath,
     pub(super) title: String,
     pub(super) lines: Vec<String>,
