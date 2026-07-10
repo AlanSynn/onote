@@ -176,6 +176,31 @@ impl ExplorerState {
             self.reflatten();
         }
     }
+
+    /// Two-way sync (Spike 7 P7.3): select + reveal `rel` after it's opened by
+    /// ANOTHER path (fuzzy open, or the initial note at startup). Expands every
+    /// ancestor folder so the row becomes visible, sets selection to `rel`, then
+    /// reflattens — which lands the `ListState` index on it. If `rel` isn't in
+    /// the tree (stale/empty), `reflatten` falls back to the first row, so this
+    /// never leaves the pane focus-dead.
+    pub(super) fn select_note(&mut self, rel: &str) {
+        // Every path PREFIX of `rel` (except the full path itself, which is the
+        // note, not a folder) is an ancestor folder — expand each so the note
+        // row surfaces. Inserting a non-existent prefix is harmless (a stale
+        // `expanded` entry is simply never matched in `flatten_into`).
+        let mut acc = String::new();
+        for (i, seg) in rel.split('/').enumerate() {
+            if i > 0 {
+                acc.push('/');
+            }
+            acc.push_str(seg);
+            if acc != rel {
+                self.expanded.insert(acc.clone());
+            }
+        }
+        self.selected = Some(rel.to_string());
+        self.reflatten();
+    }
 }
 
 /// Depth-first walk emitting a [`Row`] per visible entry. Folders recurse only
@@ -199,12 +224,15 @@ fn flatten_into(entry: &VaultEntry, depth: usize, expanded: &HashSet<String>, ou
 
 /// Render the Explorer pane. `active` switches the border (Thick when focused,
 /// Rounded when not) — basalt's focus cue. Selection highlight + scroll live in
-/// the `ListState` carried on `explorer`.
+/// the `ListState` carried on `explorer`. `current_rel` marks the note open in
+/// the editor with a `●` + Green-bold name (Spike 7 P7.3 two-way sync) so the
+/// pane always shows where the editor is, independent of the selection cursor.
 pub(super) fn render_explorer(
     explorer: &mut ExplorerState,
     frame: &mut Frame,
     area: Rect,
     active: bool,
+    current_rel: Option<&str>,
 ) {
     let border_type = if active {
         BorderType::Thick
@@ -236,7 +264,10 @@ pub(super) fn render_explorer(
     let items: Vec<ListItem> = explorer
         .rows
         .iter()
-        .map(|r| ListItem::new(render_row(r)))
+        .map(|r| {
+            let is_current = current_rel == Some(r.rel_path.as_str());
+            ListItem::new(render_row(r, is_current))
+        })
         .collect();
     let list = List::new(items)
         .block(block)
@@ -250,9 +281,12 @@ pub(super) fn render_explorer(
 }
 
 /// Build one list line: depth indentation + folder glyph (▾ expanded / ▸
-/// collapsed) + name, with a trailing `/` on folders. Notes indent two extra
-/// columns so their names align with folder names (the glyph + its space).
-fn render_row(row: &Row) -> Line<'_> {
+/// collapsed) + name, with a trailing `/` on folders. Notes pad two columns so
+/// their names align under folder names (the folder glyph + its trailing space
+/// are 2 cells). The currently-open note (`is_current`) swaps that 2-cell pad
+/// for a Green `● ` + a Green-bold name (Spike 7 P7.3) — the bullet sits in the
+/// same cell the folder glyph would, so names stay vertically aligned.
+fn render_row(row: &Row, is_current: bool) -> Line<'_> {
     let indent: String = " ".repeat(row.depth * 2);
     match row.kind {
         EntryKind::Folder => {
@@ -269,12 +303,28 @@ fn render_row(row: &Row) -> Line<'_> {
                 ),
             ])
         }
-        EntryKind::Note => Line::from(vec![
-            Span::raw(indent),
-            // Two-space pad aligns the note name under folder names (glyph col).
-            Span::raw("  "),
-            Span::raw(row.name.clone()),
-        ]),
+        EntryKind::Note => {
+            let name_style = if is_current {
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            // 2-cell lead: a pad ("  ") normally, or a Green bullet + space
+            // ("● ") for the open note — both 2 cells, so the name column is
+            // stable regardless of which note is current.
+            let mut spans: Vec<Span<'_>> = Vec::with_capacity(3);
+            spans.push(Span::raw(indent));
+            if is_current {
+                spans.push(Span::styled("●", Style::default().fg(Color::Green)));
+                spans.push(Span::raw(" "));
+            } else {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::styled(row.name.clone(), name_style));
+            Line::from(spans)
+        }
     }
 }
 
@@ -459,5 +509,67 @@ mod tests {
                 ("top", EntryKind::Note),
             ]
         );
+    }
+
+    // ── Two-way sync: select_note (P7.3) ───────────────────────────────────
+    //
+    // Opening a note via fuzzy / startup must select + REVEAL it in the tree
+    // (expand ancestors) so the pane tracks the editor without manual nav.
+
+    /// `select_note` expands every ancestor of a deep note, then lands the
+    /// cursor on it — even though the tree started fully collapsed.
+    #[test]
+    fn select_note_reveals_nested_note() {
+        let mut ex = ExplorerState::default();
+        let inner = folder("Notes/inner", vec![note("Notes/inner/deep.md")]);
+        let notes = folder("Notes", vec![inner]);
+        ex.set_tree(vec![notes]);
+        // Fully collapsed → deep.md is NOT visible yet.
+        assert_eq!(ex.selected_rel_path(), Some("Notes"));
+        // Open deep.md via the "other path" (fuzzy/startup): it must reveal.
+        ex.select_note("Notes/inner/deep.md");
+        assert_eq!(ex.selected_rel_path(), Some("Notes/inner/deep.md"));
+        // Both ancestor folders expanded so the note is a visible row.
+        assert_eq!(
+            visible(&ex),
+            vec![
+                ("Notes", EntryKind::Folder),
+                ("inner", EntryKind::Folder),
+                ("deep", EntryKind::Note),
+            ]
+        );
+    }
+
+    /// A root-level note (no folder) just gets selected — no ancestors to expand.
+    #[test]
+    fn select_note_root_level_note_selects_directly() {
+        let mut ex = ExplorerState::default();
+        ex.set_tree(vec![note("a.md"), note("b.md")]);
+        ex.select_note("b.md");
+        assert_eq!(ex.selected_rel_path(), Some("b.md"));
+    }
+
+    /// Selecting a note absent from the tree never panics and never leaves the
+    /// pane focus-dead — selection falls back to the first visible row.
+    #[test]
+    fn select_note_missing_note_falls_back_to_first() {
+        let mut ex = ExplorerState::default();
+        ex.set_tree(vec![note("a.md"), note("b.md")]);
+        ex.select_note("does/not/exist.md");
+        assert_eq!(
+            ex.selected_rel_path(),
+            Some("a.md"),
+            "missing note falls back to the first row"
+        );
+    }
+
+    /// `select_note` on an empty tree stays empty + unselected (no panic).
+    #[test]
+    fn select_note_empty_tree_is_noop() {
+        let mut ex = ExplorerState::default();
+        ex.set_tree(vec![]);
+        ex.select_note("anything.md");
+        assert!(ex.is_empty());
+        assert_eq!(ex.selected_rel_path(), None);
     }
 }

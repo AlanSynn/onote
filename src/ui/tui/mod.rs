@@ -264,10 +264,16 @@ pub fn run(app: &App, initial: NoteDocument) -> Result<()> {
     // Failure to start the watcher is non-fatal — save-time conflict detection
     // (§7 optimistic concurrency) still protects data.
     let watcher_rx = app.watch(&[app.config().vault.clone()]).ok().flatten();
-    // Spike 7 P7.2: seed the Explorer tree. A load failure is non-fatal — the
-    // editor works without it; the pane just shows empty until a watch refresh.
+    // Spike 7 P7.2/P7.3: seed the Explorer tree, then two-way-sync the initial
+    // note — select + reveal it so the pane opens already pointing at the note
+    // the editor is showing. A load failure is non-fatal: the editor works
+    // without it, and the pane refreshes on the first watch event.
     if let Ok(tree) = app.list_vault_tree() {
         state.explorer.set_tree(tree);
+        // `path.as_str()` allocates (`RelativeNotePath` accessor); bind the owned
+        // `String` so it outlives the borrowed `&str` we hand to `select_note`.
+        let initial = state.path.as_str();
+        state.explorer.select_note(&initial);
     }
     main_loop(app, &mut terminal, &mut state, watcher_rx)
 }
@@ -437,8 +443,8 @@ fn toggle_explorer(state: &mut EditorState) {
 }
 
 /// Reinterpret an editor motion/Enter/Esc action as Explorer tree nav (Spike 7
-/// P7.2). The Explorer has no open-note action yet — Enter toggles a folder's
-/// expand/collapse; opening a note lands in P7.3.
+/// P7.2). Enter on a folder toggles its expand/collapse (the note-open Enter is
+/// handled in `handle_edit_mode` before this runs).
 fn apply_explorer_action(state: &mut EditorState, action: Action) {
     use Action::*;
     match action {
@@ -826,8 +832,14 @@ fn handle_fuzzy_event(app: &App, state: &mut EditorState, key: KeyEvent) -> Resu
             if let Some(sel) = state.fuzzy_results.get(state.fuzzy_sel).cloned() {
                 let doc = app.open_note(&sel.path)?;
                 state.reload(doc);
+                // Spike 7 P7.3 two-way sync: the fuzzy open changed the editor's
+                // note, so move the Explorer cursor onto it (expanding ancestors
+                // to reveal it) — the pane tracks the editor without manual nav.
+                // `path.as_str()` allocates; bind once and reuse for the toast.
+                let rel = sel.path.as_str();
+                state.explorer.select_note(&rel);
                 state.mode = Mode::Edit;
-                state.toast(format!("opened {}", sel.path.as_str()));
+                state.toast(format!("opened {rel}"));
             }
         }
         KeyCode::Backspace => {
@@ -899,8 +911,9 @@ fn reload(app: &App, state: &mut EditorState) -> Result<Control> {
 
 /// Open the note selected in the Explorer (Enter on a note row, Spike 7).
 /// Mirrors the fuzzy-open path: load via the use case, swap the editor buffer,
-/// focus the editor. The Explorer stays visible with its cursor on the opened
-/// note (two-way cursor sync lands in P7.3).
+/// focus the editor. The Explorer stays visible; selection is already on the
+/// opened note (the row Enter acted on), and the P7.3 current-note marker
+/// (rendered off `app.current_note()`) confirms it from the editor's side.
 fn open_from_explorer(
     app: &App,
     state: &mut EditorState,

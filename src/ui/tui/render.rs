@@ -80,7 +80,19 @@ pub(super) fn render(app: &App, state: &mut EditorState, frame: &mut Frame) {
             ])
             .split(chunks[1]);
         let active = state.active_pane == ActivePane::Explorer;
-        render_explorer(&mut state.explorer, frame, h[0], active);
+        // P7.3 two-way sync: mark the note open in the editor so the tree always
+        // shows the editor's location. `current_note()` returns an owned
+        // `OpenNote` (cloned from the Mutex); `path.as_str()` allocates a
+        // `String` (the domain accessor), so keep the owned `Option<String>` in
+        // a local and `as_deref()` into the `Option<&str>` the renderer wants.
+        let current_rel = app.current_note().map(|n| n.path.as_str());
+        render_explorer(
+            &mut state.explorer,
+            frame,
+            h[0],
+            active,
+            current_rel.as_deref(),
+        );
         h[1]
     };
     // `render_editor` records viewport height into `state.view_height` for the
