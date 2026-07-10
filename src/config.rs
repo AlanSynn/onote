@@ -45,6 +45,9 @@ pub struct Config {
     /// layer parses them. See [`KeymapConfig`].
     #[serde(default)]
     pub keymap: KeymapConfig,
+    /// Responsive pane-layout knobs (`[layout]`) — Spike 7 Explorer drawer.
+    #[serde(default)]
+    pub layout: LayoutConfig,
 }
 
 fn default_note() -> String {
@@ -92,6 +95,51 @@ pub struct KeymapConfig {
     /// pairs DIRECTLY (not nested under a `bindings =` sub-table).
     #[serde(flatten)]
     pub bindings: BTreeMap<String, String>,
+}
+
+/// Responsive pane-layout knobs (`[layout]` in config.toml), driving the
+/// basalt-style `[Explorer | Editor | Outline]` split (`CLAUDE.md` §3.2
+/// `note_drawer`). Spike 7 wires the LEFT Explorer; the right Outline lands
+/// later. All widths are terminal columns.
+///
+/// ```toml
+/// [layout]
+/// explorer_width            = 30   # Explorer pane width when visible
+/// explorer_hidden_width     = 4    # reserved (toggle gutter, P7.2)
+/// show_explorer_threshold   = 100  # auto-show Explorer at/above this width
+/// ```
+///
+/// Below `show_explorer_threshold` the Explorer is `Hidden` and the editor
+/// takes the full width (today's behavior — zero regression). The manual
+/// toggle (Ctrl+E, remappable) that overrides this arrives in P7.2.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayoutConfig {
+    #[serde(default = "default_explorer_width")]
+    pub explorer_width: u16,
+    #[serde(default = "default_explorer_hidden_width")]
+    pub explorer_hidden_width: u16,
+    #[serde(default = "default_show_explorer_threshold")]
+    pub show_explorer_threshold: u16,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self {
+            explorer_width: default_explorer_width(),
+            explorer_hidden_width: default_explorer_hidden_width(),
+            show_explorer_threshold: default_show_explorer_threshold(),
+        }
+    }
+}
+
+fn default_explorer_width() -> u16 {
+    30
+}
+fn default_explorer_hidden_width() -> u16 {
+    4
+}
+fn default_show_explorer_threshold() -> u16 {
+    100
 }
 
 impl Config {
@@ -144,6 +192,7 @@ impl Config {
             share_port: default_share_port(),
             share_allow_lan: false,
             keymap: KeymapConfig::default(),
+            layout: LayoutConfig::default(),
         }
     }
 
@@ -180,6 +229,8 @@ struct ConfigFile {
     share_allow_lan: bool,
     #[serde(default)]
     keymap: KeymapConfig,
+    #[serde(default)]
+    layout: LayoutConfig,
 }
 
 impl ConfigFile {
@@ -231,6 +282,7 @@ impl ConfigFile {
             share_port: self.share_port,
             share_allow_lan: self.share_allow_lan,
             keymap: self.keymap,
+            layout: self.layout,
         })
     }
 }
@@ -310,6 +362,31 @@ vault = "{vault}"
             cfg.keymap.bindings.get("ctrl+shift+c").map(String::as_str),
             Some("copy")
         );
+    }
+
+    /// `[layout]` knobs parse into `LayoutConfig`; a missing table yields the
+    /// defaults (Explorer 30 cols, threshold 100). The TUI layer reads these to
+    /// decide the basalt-style `[Explorer | Editor]` split (Spike 7).
+    #[test]
+    fn layout_section_parses() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut f = tmp.reopen().unwrap();
+        let vault = abs_vault_toml();
+        writeln!(
+            f,
+            r#"
+vault = "{vault}"
+[layout]
+explorer_width = 42
+show_explorer_threshold = 120
+"#
+        )
+        .unwrap();
+        let cfg = Config::load_from(Some(tmp.path())).unwrap();
+        assert_eq!(cfg.layout.explorer_width, 42);
+        assert_eq!(cfg.layout.show_explorer_threshold, 120);
+        // Unspecified key falls back to its default, not 0.
+        assert_eq!(cfg.layout.explorer_hidden_width, 4);
     }
 
     #[test]

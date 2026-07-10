@@ -67,6 +67,7 @@ use crate::domain::vault::RelativeNotePath;
 
 mod editor;
 mod keymap;
+mod layout;
 mod render;
 use editor::*;
 use keymap::*;

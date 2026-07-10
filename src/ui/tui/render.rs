@@ -17,6 +17,7 @@ use super::editor::{
     char_count, char_to_byte, line_selection, snap_to_grapheme_start, EditorState, LineSel,
     Selection,
 };
+use super::layout::{explorer_constraint, explorer_visibility, Visibility};
 use super::{format_size, ImageOverlay, Mode};
 
 /// Render the §9 small-terminal guard message. App-free signature
@@ -52,10 +53,33 @@ pub(super) fn render(app: &App, state: &mut EditorState, frame: &mut Frame) {
         .split(area);
 
     render_path_bar(state, frame, chunks[0]);
+    // Spike 7 P7.0: responsive Explorer drawer (basalt-style; `CLAUDE.md` §3.2
+    // `note_drawer`). Below `show_explorer_threshold` (default 100 cols) the
+    // Explorer is `Hidden` and the editor keeps the full content row — the
+    // horizontal split is skipped entirely, so the editor surface + mouse
+    // cell→char map are byte-identical to pre-Spike-7 (zero regression gate).
+    // When `Visible`/`FullWidth`, split the content row into
+    // `[explorer | editor]`. `render_editor` re-captures the (now narrower)
+    // inner rect into `state.editor_x/y/width` every frame, so the mouse map
+    // auto-corrects the moment the explorer renders. The real tree widget ships
+    // in P7.2 (`note_drawer.rs`); P7.0 renders a titled placeholder so the split
+    // is visible + TestBackend-testable now.
+    let cfg = app.config();
+    let vis = explorer_visibility(chunks[1].width, &cfg.layout);
+    let editor_area = if vis == Visibility::Hidden {
+        chunks[1]
+    } else {
+        let h = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([explorer_constraint(vis, &cfg.layout), Constraint::Min(1)])
+            .split(chunks[1]);
+        render_explorer_placeholder(frame, h[0]);
+        h[1]
+    };
     // `render_editor` records viewport height into `state.view_height` for the
     // mouse-scroll clamp. Cursor-follow (`adjust_scroll`) runs after each edit
     // key, not here, so a reader can mouse-scroll away from the cursor.
-    render_editor(app, state, frame, chunks[1]);
+    render_editor(app, state, frame, editor_area);
     render_status(state, frame, chunks[2]);
 
     if state.mode == Mode::FuzzyOpen {
@@ -127,6 +151,38 @@ fn render_editor(app: &App, state: &mut EditorState, frame: &mut Frame, area: Re
         frame.set_cursor_position((x, y));
     }
     height
+}
+
+/// Spike 7 P7.0 placeholder for the Explorer drawer. Renders an empty titled
+/// pane so the responsive split is visible + TestBackend-testable; the real tree
+/// widget (`VaultEntry` list, collapse/expand, selection highlight, active-pane
+/// thick border) ships in P7.2 (`note_drawer.rs`). Pure UI — no tree DATA yet
+/// (that arrives via the `VaultRepository::list_tree` port in P7.1), so the pane
+/// is inert. The border matches the editor's left-border divider for a clean
+/// visual seam; active-pane focus styling is deferred to P7.2 to avoid implying
+/// interactivity that doesn't exist yet.
+fn render_explorer_placeholder(frame: &mut Frame, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::LEFT)
+        .title(Line::from(Span::styled(
+            " Explorer ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .border_style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    // Only draw the hint when there's room for it — a 1-row pane (or a
+    // FullWidth split leaving the explorer sliver-tall) would clip the text.
+    if inner.height > 0 {
+        frame.render_widget(
+            Paragraph::new("vault tree\n(Spike 7 · P7.2)")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::DarkGray)),
+            inner,
+        );
+    }
 }
 
 fn render_status(state: &EditorState, frame: &mut Frame, area: Rect) {
