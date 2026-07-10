@@ -13,7 +13,7 @@ use crate::domain::backup::{BackupMessage, BackupReport, BackupState};
 use crate::domain::note::{ContentHash, MarkdownBody, NoteDocument, NoteSummary, SearchHit};
 use crate::domain::session::ExternalChange;
 use crate::domain::share::{SharePolicy, ShareSession};
-use crate::domain::vault::RelativeNotePath;
+use crate::domain::vault::{RelativeNotePath, VaultEntry};
 use crate::ports::WriteResult;
 
 /// Replace control bytes (except `\t`) in untrusted strings before logging, to
@@ -72,6 +72,15 @@ impl App {
 
     pub fn list_notes(&self) -> Result<Vec<NoteSummary>> {
         Ok(self.deps().vault.list_notes()?)
+    }
+
+    /// Recursive vault tree for the Explorer drawer (`CLAUDE.md` §3.2). Pure
+    /// delegation to the port — the tree is read straight from the
+    /// source-of-truth files (§6) with no index state, so there is nothing for
+    /// the use case to coordinate here (unlike `open_note`, which also refreshes
+    /// the index). Folders-first + alphabetical ordering is the adapter's job.
+    pub fn list_vault_tree(&self) -> Result<Vec<VaultEntry>> {
+        Ok(self.deps().vault.list_tree()?)
     }
 
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {

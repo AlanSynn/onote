@@ -15,7 +15,7 @@ use crate::domain::errors::{
 use crate::domain::note::{ContentHash, MarkdownBody, NoteDocument, NoteSummary, SearchHit};
 use crate::domain::session::ExternalChange;
 use crate::domain::share::{SharePolicy, ShareSession, ShareSnapshot};
-use crate::domain::vault::RelativeNotePath;
+use crate::domain::vault::{RelativeNotePath, VaultEntry};
 
 /// Result of an optimistic write (`CLAUDE.md` §3.3, §7).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +43,12 @@ pub trait VaultRepository: Send + Sync {
         folder: Option<&RelativeNotePath>,
     ) -> Result<RelativeNotePath, VaultError>;
     fn delete_note(&self, path: &RelativeNotePath) -> Result<(), VaultError>;
+    /// Recursive vault tree (folders + `.md` notes) for the Explorer drawer
+    /// (`CLAUDE.md` §3.2 `note_drawer`). Returns top-level entries only; folders
+    /// carry nested `children`. Folders-first + alphabetical, excluding cache/
+    /// config dirs and dotfiles. Read straight from the source-of-truth files
+    /// (§6) — no index state.
+    fn list_tree(&self) -> Result<Vec<VaultEntry>, VaultError>;
     /// Current hash of bytes on disk, or `None` if the file does not exist.
     fn disk_hash(&self, path: &RelativeNotePath) -> Result<Option<ContentHash>, VaultError>;
 }

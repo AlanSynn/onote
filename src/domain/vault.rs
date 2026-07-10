@@ -177,6 +177,34 @@ fn canonical_target(joined: &Path) -> std::io::Result<PathBuf> {
     Ok(joined.to_path_buf())
 }
 
+/// One node in the vault tree for the Explorer drawer (`CLAUDE.md` §3.1 Vault,
+/// §3.2 `note_drawer`). Pure domain data — the UI layer decides glyphs,
+/// indentation, and selection styling; this type knows nothing of ratatui or the
+/// filesystem. Built by `VaultRepository::list_tree` (infra walks disk; this is
+/// the serializable result, not the walk).
+///
+/// `name` is the DISPLAY name: a folder's name as-is, or a note's STEM (filename
+/// minus `.md`) — matching the Obsidian/IDE convention of hiding the extension
+/// in a file tree. The full path (with extension) stays in `rel_path` so opening
+/// the note routes through the normal `read_note` flow (no parallel open path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultEntry {
+    pub name: String,
+    pub rel_path: RelativeNotePath,
+    pub kind: EntryKind,
+    /// Folder children (folders-first + alphabetical, established by the infra
+    /// adapter). Empty for notes and for folders containing no `.md` notes.
+    pub children: Vec<VaultEntry>,
+}
+
+/// Folder vs note (`CLAUDE.md` §3.1). A folder with no `.md` descendants still
+/// appears (empty `children`) — the Explorer renders it as a collapsible node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    Folder,
+    Note,
+}
+
 /// User-facing vault layout knobs (subset of `config.toml` that affects paths).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VaultLayout {

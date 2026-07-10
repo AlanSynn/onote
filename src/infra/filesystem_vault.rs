@@ -11,17 +11,34 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::domain::errors::VaultError;
 use crate::domain::note::{ContentHash, NoteDocument, NoteSummary};
-use crate::domain::vault::RelativeNotePath;
+use crate::domain::vault::{EntryKind, RelativeNotePath, VaultEntry};
 use crate::ports::{VaultRepository, WriteResult};
 
-/// Directory names skipped during `list_notes` recursion
-/// (`CLAUDE.md` §3.1 Vault). These hold Obsidian config, onote state, git
-/// internals, or JS deps — never user notes.
+/// Directory names skipped during vault walks (`CLAUDE.md` §3.1 Vault). These
+/// hold Obsidian config, onote state, git internals, or JS deps — never user
+/// notes.
 ///
 /// `pub(crate)` so the file watcher (`file_watch.rs`) reuses the SAME set
 /// rather than re-declaring it (DRY §5); the watcher must drop events under
 /// these dirs to avoid surfacing ghost notes in fuzzy/FTS.
 pub(crate) const SKIP_DIRS: &[&str] = &[".git", ".obsidian", ".onote", "node_modules"];
+
+/// True if a directory named `name` should be excluded from a vault walk: a
+/// named cache/config dir ([`SKIP_DIRS`]) OR any dotfile dir (Obsidian `.trash`,
+/// user `.templates`, etc.). Shared by the note-index walk (`walk_md`) and the
+/// Explorer tree walk (`walk_tree`) so the two never diverge on what counts as a
+/// hidden dir (DRY §5; round-10/11 convergence). `pub(crate)` so the file
+/// watcher applies the identical predicate.
+pub(crate) fn is_excluded_dir(name: &str) -> bool {
+    SKIP_DIRS.contains(&name) || name.starts_with('.')
+}
+
+/// True if a file named `name` should be excluded: any dotfile (hidden file).
+/// Shared by both walks so a hidden `.scratch.md` stays out of the index AND the
+/// Explorer tree (DRY §5; mirrors the directory sweep one level down).
+fn is_excluded_file(name: &str) -> bool {
+    name.starts_with('.')
+}
 
 /// Filesystem implementation of [`VaultRepository`].
 ///
@@ -51,6 +68,16 @@ impl VaultRepository for FilesystemVault {
         walk_md(&self.root, &self.root, &mut entries)?;
         // Most-recent-first (`CLAUDE.md` §3.3 list_notes).
         entries.sort_by_key(|e| std::cmp::Reverse(e.modified_at));
+        Ok(entries)
+    }
+
+    fn list_tree(&self) -> Result<Vec<VaultEntry>, VaultError> {
+        // Explorer drawer tree (`CLAUDE.md` §3.2). Read straight from the
+        // source-of-truth files (§6); no index/cache involved. Folders-first +
+        // alphabetical is established inside `walk_tree`, so the top-level slice
+        // is already sorted.
+        let mut entries: Vec<VaultEntry> = Vec::new();
+        walk_tree(&self.root, &self.root, &mut entries)?;
         Ok(entries)
     }
 
@@ -231,16 +258,15 @@ fn walk_md(root: &Path, dir: &Path, out: &mut Vec<NoteSummary>) -> Result<(), Va
         if ft.is_dir() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            // Skip the named cache/config dirs (SKIP_DIRS) AND any dotfile dir.
-            // The dotfile sweep keeps `walk_md` aligned with the file watcher
-            // (`file_watch::forward`) and `attachment_store::walk_notes`, both of
-            // which drop dot-prefixed segments — without it this function would
-            // INDEX notes under Obsidian's `.trash/` recycle bin (and user
-            // `.drafts/`, `.templates/`, `.archive/`) while the watcher silently
-            // dropped their external edits, leaving permanently stale index rows
+            // Skip the named cache/config dirs (SKIP_DIRS) AND any dotfile dir,
+            // via the shared predicate (DRY §5) so the index walk, the Explorer
+            // tree walk, and the file watcher never diverge on what counts as a
+            // hidden dir. Without it this function would INDEX notes under
+            // Obsidian's `.trash/` recycle bin while the watcher silently dropped
+            // their external edits — leaving permanently stale index rows
             // (round-10 regression-hunt MEDIUM). Indexing a recycle bin is also
             // a UX bug in its own right.
-            if SKIP_DIRS.iter().any(|s| *s == &*name_str) || name_str.starts_with('.') {
+            if is_excluded_dir(&name_str) {
                 continue;
             }
             walk_md(root, &path, out)?;
@@ -248,15 +274,16 @@ fn walk_md(root: &Path, dir: &Path, out: &mut Vec<NoteSummary>) -> Result<(), Va
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
                 continue;
             }
-            // File-level dotfile sweep: skip a `.md` file whose NAME starts with
-            // `.` (e.g. `.scratch.md`). Aligns the FILE branch with the directory
-            // branch above and with `file_watch::forward` (which drops any path
-            // segment starting with `.`). Without it, a hidden `.md` would be
-            // INDEXED by `list_notes`/`reindex_all` while the watcher drops its
-            // external edits — the same stale-index divergence the directory
-            // sweep closed, just one level down (round-11 convergence nit).
+            // File-level dotfile sweep via the shared predicate (DRY §5): skip a
+            // `.md` file whose NAME starts with `.` (e.g. `.scratch.md`). Aligns
+            // the FILE branch with the directory branch above and with
+            // `file_watch::forward` (which drops any path segment starting with
+            // `.`). Without it, a hidden `.md` would be INDEXED by
+            // `list_notes`/`reindex_all` while the watcher drops its external
+            // edits — the same stale-index divergence the directory sweep closed,
+            // just one level down (round-11 convergence nit).
             let file_name = entry.file_name();
-            if file_name.to_string_lossy().starts_with('.') {
+            if is_excluded_file(&file_name.to_string_lossy()) {
                 continue;
             }
             let rel = match path.strip_prefix(root) {
@@ -280,6 +307,79 @@ fn walk_md(root: &Path, dir: &Path, out: &mut Vec<NoteSummary>) -> Result<(), Va
         }
     }
     Ok(())
+}
+
+/// Recursively collect the vault tree (folders + `.md` notes) into `out`, for
+/// the Explorer drawer (`CLAUDE.md` §3.2). Mirrors `walk_md`'s exclusion rules
+/// (shared predicates — no index-vs-tree divergence) but keeps FOLDERS and
+/// establishes folders-first + alphabetical order via [`sort_entries`].
+///
+/// Unlike `walk_md`, this walk does NOT read file bodies: the tree needs only
+/// names + structure, so a large vault lists without parsing every note. Note
+/// `name` is the file STEM (extension hidden, Obsidian/IDE convention); the full
+/// path stays in `rel_path`. Symlinks are skipped (consistent with `walk_md` —
+/// `file_type()` reports the link itself, not its target), which also forbids
+/// symlink-loop recursion.
+fn walk_tree(root: &Path, dir: &Path, out: &mut Vec<VaultEntry>) -> Result<(), VaultError> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let name_str = file_name.to_string_lossy();
+
+        if ft.is_dir() {
+            if is_excluded_dir(&name_str) {
+                continue;
+            }
+            let mut children = Vec::new();
+            walk_tree(root, &path, &mut children)?;
+            let rel = path
+                .strip_prefix(root)
+                .map_err(|_| VaultError::Escape(path.display().to_string()))?;
+            out.push(VaultEntry {
+                name: name_str.into_owned(),
+                rel_path: RelativeNotePath::new(rel.to_path_buf())?,
+                kind: EntryKind::Folder,
+                children,
+            });
+        } else if ft.is_file() {
+            if is_excluded_file(&name_str) {
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(root)
+                .map_err(|_| VaultError::Escape(path.display().to_string()))?;
+            // Display name = STEM (hide `.md`); fall back to the full name only
+            // if the path has no stem (shouldn't happen for a `.md` file).
+            let stem = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| name_str.into_owned());
+            out.push(VaultEntry {
+                name: stem,
+                rel_path: RelativeNotePath::new(rel.to_path_buf())?,
+                kind: EntryKind::Note,
+                children: Vec::new(),
+            });
+        }
+    }
+    sort_entries(out);
+    Ok(())
+}
+
+/// Sort vault entries folders-first, then case-insensitively alphabetical by
+/// display name. Stable, so equal-key entries keep walk order. Applied at every
+/// depth by `walk_tree`, so the whole tree is ordered without a second pass.
+fn sort_entries(entries: &mut [VaultEntry]) {
+    entries.sort_by(|a, b| match (a.kind, b.kind) {
+        (EntryKind::Folder, EntryKind::Note) => std::cmp::Ordering::Less,
+        (EntryKind::Note, EntryKind::Folder) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
 }
 
 /// `mtime` of `path` as Unix-epoch seconds. Pre-epoch mtimes are reported as
@@ -623,6 +723,165 @@ mod tests {
             notes[notes.len() - 1].title.as_str(),
             "Old",
             "oldest note must be last",
+        );
+    }
+
+    /// Flatten a `VaultEntry` tree into `(depth, kind, name)` tuples for
+    /// assertion, walking children in stored (already-sorted) order. `depth`
+    /// lets a test pin the nesting without parsing indentation glyphs.
+    fn flatten(entries: &[VaultEntry]) -> Vec<(usize, EntryKind, &str)> {
+        let mut out = Vec::new();
+        fn walk<'a>(e: &'a VaultEntry, depth: usize, out: &mut Vec<(usize, EntryKind, &'a str)>) {
+            out.push((depth, e.kind, e.name.as_str()));
+            for c in &e.children {
+                walk(c, depth + 1, out);
+            }
+        }
+        for e in entries {
+            walk(e, 0, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn list_tree_folders_first_then_alpha() {
+        let (_dir, vault) = vault();
+        let root = _dir.path();
+        std::fs::write(root.join("zeta.md"), "# Z").unwrap();
+        std::fs::write(root.join("alpha.md"), "# A").unwrap();
+        std::fs::create_dir_all(root.join("Notes")).unwrap();
+        std::fs::write(root.join("Notes/beta.md"), "# B").unwrap();
+
+        let tree = vault.list_tree().unwrap();
+        let flat = flatten(&tree);
+        // Folders (Notes) before notes (alpha, zeta); notes alphabetical.
+        assert_eq!(
+            flat,
+            vec![
+                (0, EntryKind::Folder, "Notes"),
+                (1, EntryKind::Note, "beta"),
+                (0, EntryKind::Note, "alpha"),
+                (0, EntryKind::Note, "zeta"),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_tree_note_name_is_stem_no_extension() {
+        // The Explorer hides `.md` (Obsidian/IDE convention); the full path
+        // stays in `rel_path`.
+        let (_dir, vault) = vault();
+        std::fs::write(_dir.path().join("Robot Idea.md"), "# Robot").unwrap();
+        let tree = vault.list_tree().unwrap();
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].name, "Robot Idea");
+        assert_eq!(tree[0].kind, EntryKind::Note);
+        assert_eq!(tree[0].rel_path.as_str(), "Robot Idea.md");
+    }
+
+    #[test]
+    fn list_tree_excludes_cache_and_dotfile_dirs() {
+        let (_dir, vault) = vault();
+        let root = _dir.path();
+        std::fs::write(root.join("keep.md"), "# Keep").unwrap();
+        for hidden in [".obsidian", ".git", ".onote", "node_modules", ".trash"] {
+            std::fs::create_dir_all(root.join(hidden)).unwrap();
+            std::fs::write(root.join(hidden).join("secret.md"), "# Hidden").unwrap();
+        }
+        let tree = vault.list_tree().unwrap();
+        let flat = flatten(&tree);
+        // Only the top-level keep.md survives — no hidden dirs, no nested
+        // secret.md from any of them.
+        assert_eq!(flat, vec![(0, EntryKind::Note, "keep")]);
+    }
+
+    #[test]
+    fn list_tree_excludes_non_md_and_hidden_files() {
+        let (_dir, vault) = vault();
+        let root = _dir.path();
+        std::fs::write(root.join("note.md"), "# N").unwrap();
+        // Non-.md file: ignored (notes are the tree's scope, §1.2).
+        std::fs::write(root.join("image.png"), b"png").unwrap();
+        // Hidden .md file: dropped by the shared dotfile predicate.
+        std::fs::write(root.join(".scratch.md"), "# Hidden").unwrap();
+
+        let tree = vault.list_tree().unwrap();
+        let flat = flatten(&tree);
+        assert_eq!(flat, vec![(0, EntryKind::Note, "note")]);
+    }
+
+    #[test]
+    fn list_tree_nested_folders_carry_children() {
+        let (_dir, vault) = vault();
+        let root = _dir.path();
+        std::fs::create_dir_all(root.join("Daily/2026/07")).unwrap();
+        std::fs::write(root.join("Daily/2026/07/ten.md"), "# Ten").unwrap();
+        std::fs::write(root.join("Daily/2026/jun.md"), "# Jun").unwrap();
+        std::fs::write(root.join("Daily/top.md"), "# Top").unwrap();
+
+        let tree = vault.list_tree().unwrap();
+        // Pre-order DFS: each node pushed before its children. Within a level,
+        // folders precede notes (so `07` before `jun` under `2026`; `2026`
+        // before `top` under `Daily`).
+        assert_eq!(
+            flatten(&tree),
+            vec![
+                (0, EntryKind::Folder, "Daily"),
+                (1, EntryKind::Folder, "2026"),
+                (2, EntryKind::Folder, "07"),
+                (3, EntryKind::Note, "ten"),
+                (2, EntryKind::Note, "jun"),
+                (1, EntryKind::Note, "top"),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_tree_empty_vault() {
+        let (_dir, vault) = vault();
+        let tree = vault.list_tree().unwrap();
+        assert!(tree.is_empty(), "empty vault → empty tree");
+    }
+
+    #[test]
+    fn list_tree_and_list_notes_agree_on_visibility() {
+        // The index walk (`list_notes`) and the tree walk (`list_tree`) share
+        // exclusion predicates; a note visible to one must be visible to the
+        // other. Guards the round-10/11 DRY consolidation (no divergence
+        // between the two walks on hidden dirs / dotfiles / non-`.md` files).
+        let (_dir, vault) = vault();
+        let root = _dir.path();
+        std::fs::write(root.join("visible.md"), "# V").unwrap();
+        std::fs::create_dir_all(root.join(".trash")).unwrap();
+        std::fs::write(root.join(".trash/gone.md"), "# G").unwrap();
+        std::fs::write(root.join(".hidden.md"), "# H").unwrap();
+        std::fs::write(root.join("img.png"), b"png").unwrap();
+
+        let mut notes: std::collections::HashSet<String> = vault
+            .list_notes()
+            .unwrap()
+            .into_iter()
+            .map(|n| n.path.as_str())
+            .collect();
+
+        fn collect_note_paths(entries: &[VaultEntry], out: &mut std::collections::HashSet<String>) {
+            for e in entries {
+                if e.kind == EntryKind::Note {
+                    out.insert(e.rel_path.as_str());
+                }
+                collect_note_paths(&e.children, out);
+            }
+        }
+        let mut tree_note_paths = std::collections::HashSet::new();
+        collect_note_paths(&vault.list_tree().unwrap(), &mut tree_note_paths);
+
+        assert_eq!(notes, tree_note_paths, "index walk and tree walk agree");
+        // Sanity: the visible note is in, the hidden ones + png are out.
+        assert!(notes.contains("visible.md"));
+        assert!(notes.remove("visible.md"));
+        assert!(
+            notes.is_empty(),
+            "only visible.md should remain; got {notes:?}"
         );
     }
 
