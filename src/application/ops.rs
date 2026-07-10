@@ -55,7 +55,7 @@ fn compose_rename_target(
         .unwrap_or_default();
     let leaf = match kind {
         EntryKind::Note => {
-            let stem = crate::infra::filesystem_vault::slugify(name);
+            let stem = crate::domain::slug::slugify(name);
             let stem = if stem.is_empty() {
                 "untitled".to_string()
             } else {
@@ -580,15 +580,14 @@ impl App {
     /// `git pull`) that would otherwise point the reader at a file outside.
     pub fn image_preview(&self, rel: &RelativeNotePath) -> Result<crate::ports::LoadedImage> {
         let renderer = self.deps().image_renderer.clone();
-        let abs = self.config().vault.join(rel.as_path());
-        let canon_vault = std::fs::canonicalize(&self.config().vault)
-            .map_err(|e| anyhow!("vault root not accessible: {e}"))?;
-        let canon_target = std::fs::canonicalize(&abs)
-            .map_err(|e| anyhow!("image not found: {}: {e}", rel.as_str()))?;
-        if !canon_target.starts_with(&canon_vault) {
-            anyhow::bail!("attachment escapes vault root: {}", rel.as_str());
-        }
-        Ok(renderer.load(&canon_target)?)
+        // §3.1 confinement: delegate to `RelativeNotePath::resolve_within`, the
+        // single source of the vault-escape guard (canonicalize root + target,
+        // refuse dangling symlinks, reject any resolved path outside the root).
+        // This closes the duplicate canonicalize-and-check that lived here — a
+        // planted in-vault symlink (e.g. via a tampered `git pull`) can't route
+        // the reader at a file outside the vault (DRY §5).
+        let abs = rel.resolve_within(&self.config().vault)?;
+        Ok(renderer.load(&abs)?)
     }
 
     /// Copy an attachment image to the clipboard (`CLAUDE.md` §2.4 fallback

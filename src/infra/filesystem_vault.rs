@@ -190,7 +190,7 @@ impl VaultRepository for FilesystemVault {
         title: &str,
         folder: Option<&RelativeNotePath>,
     ) -> Result<RelativeNotePath, VaultError> {
-        let slug = slugify(title);
+        let slug = crate::domain::slug::slugify(title);
         let stem = if slug.is_empty() {
             "untitled".to_string()
         } else {
@@ -473,26 +473,9 @@ fn write_private(path: &Path, body: &str) -> Result<(), VaultError> {
     Ok(())
 }
 
-/// Slugify per `create_note` spec: lowercase, runs of non-`[a-z0-9]` collapse
-/// to a single `-`, then trim leading/trailing `-`. `pub(crate)` so the
-/// application rename use case reuses the SAME rule (DRY §5) rather than
-/// re-deriving a filename policy — a note renamed in the Explorer must slugify
-/// identically to one created there.
-pub(crate) fn slugify(s: &str) -> String {
-    let lower = s.to_lowercase();
-    let mut out = String::with_capacity(lower.len());
-    let mut prev_dash = false;
-    for c in lower.chars() {
-        if c.is_ascii_lowercase() || c.is_ascii_digit() {
-            out.push(c);
-            prev_dash = false;
-        } else if !prev_dash {
-            out.push('-');
-            prev_dash = true;
-        }
-    }
-    out.trim_matches('-').to_string()
-}
+// Note: the slugify filename policy lives in `domain::slug` (pure string
+// transform, no IO) so both this adapter and the application rename use case
+// share one rule (DRY §5) without the application reaching into infra (§4 DIP).
 
 #[cfg(test)]
 mod tests {

@@ -6,4 +6,5 @@ pub mod errors;
 pub mod note;
 pub mod session;
 pub mod share;
+pub mod slug;
 pub mod vault;

@@ -470,9 +470,9 @@ fn paste_image_roundtrip_persists_attachment_and_resolves() {
 fn image_preview_rejects_symlink_that_escapes_vault() {
     // CLAUDE.md §3.1 "must not escape the vault root". RelativeNotePath blocks
     // `..` by construction; the real gap is a SYMLINK planted inside the vault
-    // (e.g. via a tampered `git pull`) that points at a file outside. App's OWN
-    // image_preview confinement (canonicalize + starts_with) must reject it —
-    // this complements the domain-layer RelativeNotePath::resolve_within test.
+    // (e.g. via a tampered `git pull`) that points at a file outside.
+    // image_preview delegates its confinement to RelativeNotePath::resolve_within
+    // (the single vault-escape guard), so this also covers that delegation.
     use std::os::unix::fs::symlink;
 
     use onote::domain::vault::RelativeNotePath;
@@ -488,7 +488,7 @@ fn image_preview_rejects_symlink_that_escapes_vault() {
 
     // Plant a symlink inside the vault's attachment tree that escapes to the
     // outside file. The exact subpath under Attachments/ is irrelevant to
-    // image_preview's confinement check (canonicalize + starts_with on the
+    // RelativeNotePath::resolve_within (canonicalize + starts_with on the
     // resolved target), so a flat layout is sufficient.
     let attach_dir = dir.path().join("Attachments");
     std::fs::create_dir_all(&attach_dir).unwrap();

@@ -264,6 +264,7 @@ share_allow_lan   = false                                         # loopback by 
 [layout]
 explorer_width          = 30      # Explorer pane width when visible
 show_explorer_threshold = 100     # auto-show at/above this terminal width
+explorer_hidden_width   = 4       # reserved (future toggle-gutter width)
 
 # [keymap] overrides the editor's baked keybindings — see "Keymap" below.
 # A malformed spec or unknown action is skipped (with a warning), so a typo
@@ -295,7 +296,14 @@ basalt-style). All widths are terminal columns.
 [layout]
 explorer_width          = 30   # Explorer pane width when visible
 show_explorer_threshold = 100  # auto-show at/above this terminal width
+explorer_hidden_width   = 4    # reserved (future toggle-gutter width when hidden)
 ```
+
+| Key                     | Default | Meaning                                              |
+| ----------------------- | ------- | ---------------------------------------------------- |
+| `explorer_width`        | `30`    | Explorer pane width (columns) when visible           |
+| `show_explorer_threshold` | `100` | Auto-show the Explorer at/above this terminal width  |
+| `explorer_hidden_width` | `4`     | Reserved — future toggle-gutter width when hidden    |
 
 Below `show_explorer_threshold` the Explorer is hidden and the editor takes the
 full row — byte-identical to a pre-Explorer build (zero regression). At/above
