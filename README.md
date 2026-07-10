@@ -220,6 +220,27 @@ active selection; `Esc` clears it.
 | `Ctrl+D` | Delete the image token under the caret              |
 | `Ctrl+Q` | Quit                                                |
 
+**Explorer** — the left pane auto-shows on wide terminals (≥ `show_explorer_threshold`
+cols; see [Configuration → Layout](#layout)). `Ctrl+E` toggles it anywhere and
+moves focus into it. When focused, keystrokes route to the tree instead of the
+editor; `Esc` returns focus to the editor.
+
+| Key        | Action                                                              |
+| ---------- | ------------------------------------------------------------------ |
+| `Ctrl+E`   | Toggle the Explorer pane + move focus into / out of it             |
+| `↑` `↓`    | Move the selection                                                  |
+| `←` `→`    | Collapse / expand the selected folder                              |
+| `Enter`    | Folder: toggle expand · Note: open it (focus returns to the editor) |
+| `n`        | New note (in the selected folder, or beside the selection)          |
+| `N`        | New folder                                                          |
+| `r`        | Rename the selected note or folder                                  |
+| `d`        | Delete the selected note or folder (asks to confirm)               |
+| `Esc`      | Back to the editor                                                  |
+
+> The Explorer file-op keys (`n` `N` `r` `d`) are raw, not remappable — they're
+> intercepted only while the Explorer is focused, so they never collide with
+> typing in the editor. The confirm prompt takes `y`/`Enter` or `n`/`Esc`.
+
 > `Ctrl+C` **also** quits (cancel muscle memory). Copy is `Ctrl+Shift+C` — the
 > `Shift` bit makes it a distinct combo, so the two never clash.
 
@@ -237,6 +258,12 @@ open_gui_command  = "obsidian://open?vault={vault}&file={file}"
 backup_remote     = "origin"
 share_port        = 7478
 share_allow_lan   = false                                         # loopback by default; opt into LAN
+
+# [layout] drives the responsive Explorer drawer: it auto-shows at/above
+# `show_explorer_threshold` cols, and Ctrl+E toggles it at any width.
+[layout]
+explorer_width          = 30      # Explorer pane width when visible
+show_explorer_threshold = 100     # auto-show at/above this terminal width
 
 # [keymap] overrides the editor's baked keybindings — see "Keymap" below.
 # A malformed spec or unknown action is skipped (with a warning), so a typo
@@ -257,6 +284,23 @@ share_allow_lan   = false                                         # loopback by 
 | `share_port`        | Port the read-only share server listens on                               |
 | `share_allow_lan`   | `false` = loopback only; `true` = bind LAN                               |
 | `keymap`            | `[keymap]` table of `"key-spec" = "action"` overrides (see below)        |
+| `layout`            | `[layout]` table of responsive-Explorer knobs (see below)                |
+
+### Layout
+
+The `[layout]` table drives the responsive Explorer drawer (the left pane,
+basalt-style). All widths are terminal columns.
+
+```toml
+[layout]
+explorer_width          = 30   # Explorer pane width when visible
+show_explorer_threshold = 100  # auto-show at/above this terminal width
+```
+
+Below `show_explorer_threshold` the Explorer is hidden and the editor takes the
+full row — byte-identical to a pre-Explorer build (zero regression). At/above
+the threshold it auto-shows; `Ctrl+E` overrides the auto policy at any width.
+See [Keyboard shortcuts → Explorer](#keyboard-shortcuts).
 
 ### Keymap
 

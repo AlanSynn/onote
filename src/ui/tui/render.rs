@@ -18,7 +18,7 @@ use super::editor::{
     char_count, char_to_byte, line_selection, snap_to_grapheme_start, EditorState, LineSel,
     Selection,
 };
-use super::layout::{explorer_constraint, explorer_effective_visibility, Visibility};
+use super::layout::split_content_row;
 use super::note_drawer::{render_explorer, ActivePane};
 use super::{format_size, ImageOverlay, Mode, PromptKind};
 
@@ -65,22 +65,13 @@ pub(super) fn render(app: &App, state: &mut EditorState, frame: &mut Frame) {
     // the mouse map auto-corrects the moment the explorer renders.
     state.frame_width = area.width;
     let cfg = app.config();
-    let visible = explorer_effective_visibility(
-        chunks[1].width,
-        &cfg.layout,
-        state.explorer_visible_override,
-    );
-    let editor_area = if !visible {
-        chunks[1]
-    } else {
-        let h = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                explorer_constraint(Visibility::Visible, &cfg.layout),
-                Constraint::Min(1),
-            ])
-            .split(chunks[1]);
-        let active = state.active_pane == ActivePane::Explorer;
+    // The pure split (visible → `[explorer | editor]`, hidden → editor full row)
+    // lives in `layout::split_content_row` so its geometry is unit-testable
+    // without a full `App`. `chunks[1]` is the content row between the path and
+    // status bars; the editor area is whatever the split leaves.
+    let (explorer_area, editor_area) =
+        split_content_row(chunks[1], &cfg.layout, state.explorer_visible_override);
+    if let Some(area) = explorer_area {
         // P7.3 two-way sync: mark the note open in the editor so the tree always
         // shows the editor's location. `current_note()` returns an owned
         // `OpenNote` (cloned from the Mutex); `path.as_str()` allocates a
@@ -90,12 +81,11 @@ pub(super) fn render(app: &App, state: &mut EditorState, frame: &mut Frame) {
         render_explorer(
             &mut state.explorer,
             frame,
-            h[0],
-            active,
+            area,
+            state.active_pane == ActivePane::Explorer,
             current_rel.as_deref(),
         );
-        h[1]
-    };
+    }
     // `render_editor` records viewport height into `state.view_height` for the
     // mouse-scroll clamp. Cursor-follow (`adjust_scroll`) runs after each edit
     // key, not here, so a reader can mouse-scroll away from the cursor.
