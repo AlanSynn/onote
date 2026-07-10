@@ -13,7 +13,7 @@ use crate::domain::backup::{BackupMessage, BackupReport, BackupState};
 use crate::domain::note::{ContentHash, MarkdownBody, NoteDocument, NoteSummary, SearchHit};
 use crate::domain::session::ExternalChange;
 use crate::domain::share::{SharePolicy, ShareSession};
-use crate::domain::vault::{RelativeNotePath, VaultEntry};
+use crate::domain::vault::{EntryKind, RelativeNotePath, VaultEntry};
 use crate::ports::WriteResult;
 
 /// Replace control bytes (except `\t`) in untrusted strings before logging, to
@@ -27,6 +27,46 @@ fn sanitize_for_log(s: impl AsRef<str>) -> String {
         .chars()
         .map(|c| if c.is_control() && c != '\t' { '·' } else { c })
         .collect()
+}
+
+/// Human label for an [`EntryKind`] used in error context strings.
+fn kind_label(kind: EntryKind) -> &'static str {
+    match kind {
+        EntryKind::Note => "note",
+        EntryKind::Folder => "folder",
+    }
+}
+
+/// Compose the rename target path: the SAME parent directory as `from`, with a
+/// leaf built from `name` — slugified + `.md` for a note (reusing the infra
+/// `slugify` so rename matches `create_note`'s filename rule), or the raw name
+/// for a folder. An empty note slug falls back to `untitled`, mirroring
+/// `create_note`. `RelativeNotePath::new` re-validates, so a `..`/absolute name
+/// is rejected here (§3.1) before reaching the infra.
+fn compose_rename_target(
+    from: &RelativeNotePath,
+    name: &str,
+    kind: EntryKind,
+) -> Result<RelativeNotePath> {
+    let mut target = from
+        .as_path()
+        .parent()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let leaf = match kind {
+        EntryKind::Note => {
+            let stem = crate::infra::filesystem_vault::slugify(name);
+            let stem = if stem.is_empty() {
+                "untitled".to_string()
+            } else {
+                stem
+            };
+            format!("{stem}.md")
+        }
+        EntryKind::Folder => name.to_string(),
+    };
+    target.push(&leaf);
+    Ok(RelativeNotePath::new(target)?)
 }
 
 /// Outcome of a save, surfacing §7 conflict state explicitly.
@@ -65,6 +105,17 @@ pub struct PastedImage {
     pub attachment: Attachment,
     /// Ready-to-insert token (`![](...)` or `![[...]]`) per configured link style.
     pub token: String,
+}
+
+/// Outcome of an Explorer rename/move (Spike 7 P7.4): the entry's new path,
+/// plus the open note's new path IF the rename relocated it (so the UI can
+/// follow the editor to its new location without a manual re-open).
+#[derive(Debug, Clone)]
+pub struct RenameOutcome {
+    /// The entry's new vault-relative path.
+    pub new_path: RelativeNotePath,
+    /// New path of the open note, if it sat at or under the renamed entry.
+    pub relocated_current: Option<RelativeNotePath>,
 }
 
 impl App {
@@ -156,14 +207,140 @@ impl App {
     }
 
     pub fn delete_note(&self, path: &RelativeNotePath) -> Result<()> {
-        self.deps().vault.delete_note(path)?;
-        if let Err(e) = self.deps().index.remove_note(path) {
-            tracing::warn!(note = %sanitize_for_log(path.as_str()), error = ?e, "index removal failed; search may be stale");
+        // Delegate to the entry-general path (Spike 7 P7.4 DRY): same file
+        // removal + targeted index eviction + current-clear, just without the
+        // folder branch. The bool (current-deleted) is unused at the CLI call.
+        let _deleted_current = self.delete_entry(path, EntryKind::Note)?;
+        Ok(())
+    }
+
+    /// Create an empty folder at `path` (Explorer file-ops, `CLAUDE.md` §3.2).
+    /// Idempotent (an existing folder is a no-op). Folders aren't indexed, so no
+    /// index work follows. §3.1 confinement is the infra's job.
+    pub fn create_folder(&self, path: &RelativeNotePath) -> Result<()> {
+        self.deps().vault.create_folder(path).with_context(|| {
+            format!(
+                "failed to create folder {}",
+                sanitize_for_log(path.as_str())
+            )
+        })
+    }
+
+    /// Rename/move entry `from` to a new leaf `name` in the SAME parent
+    /// directory (Explorer file-ops). `name` is the new display name; a NOTE name
+    /// is slugified + `.md` (identical rule to `create_note`, via the shared
+    /// `slugify`), a FOLDER name is kept verbatim. §3.1 confinement + §7
+    /// never-overwrite hold (infra refuses a busy target). Returns the new path
+    /// and the relocated open-note path (if any) so the UI can follow.
+    pub fn rename_entry(
+        &self,
+        from: &RelativeNotePath,
+        name: &str,
+        kind: EntryKind,
+    ) -> Result<RenameOutcome> {
+        let to = compose_rename_target(from, name, kind)?;
+        self.deps().vault.rename_entry(from, &to).with_context(|| {
+            format!(
+                "failed to rename {} {} → {}",
+                kind_label(kind),
+                sanitize_for_log(from.as_str()),
+                sanitize_for_log(to.as_str()),
+            )
+        })?;
+        // Keep the index honest (§6). A folder move shifts many rows → rebuild;
+        // a note move is a targeted remove + refresh.
+        match kind {
+            EntryKind::Note => {
+                if let Err(e) = self.deps().index.remove_note(from) {
+                    tracing::warn!(
+                        note = %sanitize_for_log(from.as_str()),
+                        error = ?e,
+                        "index remove failed; search may be stale"
+                    );
+                }
+                self.sync_index_for(&to);
+            }
+            EntryKind::Folder => {
+                if let Err(e) = self.reindex_all() {
+                    tracing::warn!(
+                        error = ?e,
+                        "reindex after folder rename failed; search may be stale"
+                    );
+                }
+            }
         }
-        if self.current().is_some_and(|n| &n.path == path) {
+        let relocated_current = self.relocate_current(from, &to);
+        Ok(RenameOutcome {
+            new_path: to,
+            relocated_current,
+        })
+    }
+
+    /// Delete a note OR folder at `path` (Explorer file-ops). Returns whether the
+    /// OPEN note was the one deleted (the UI must then load another note). §3.1
+    /// confinement holds; a missing entry surfaces `NoteNotFound`.
+    pub fn delete_entry(&self, path: &RelativeNotePath, kind: EntryKind) -> Result<bool> {
+        self.deps().vault.delete_entry(path).with_context(|| {
+            format!(
+                "failed to delete {} {}",
+                kind_label(kind),
+                sanitize_for_log(path.as_str())
+            )
+        })?;
+        let deleted_current = self.current().is_some_and(|n| &n.path == path);
+        match kind {
+            EntryKind::Note => {
+                if let Err(e) = self.deps().index.remove_note(path) {
+                    tracing::warn!(
+                        note = %sanitize_for_log(path.as_str()),
+                        error = ?e,
+                        "index remove failed; search may be stale"
+                    );
+                }
+            }
+            EntryKind::Folder => {
+                if let Err(e) = self.reindex_all() {
+                    tracing::warn!(
+                        error = ?e,
+                        "reindex after folder delete failed; search may be stale"
+                    );
+                }
+            }
+        }
+        if deleted_current {
             self.clear_current();
         }
-        Ok(())
+        Ok(deleted_current)
+    }
+
+    /// If the open note is at `from` or nested under `from/`, remap it to the
+    /// corresponding path under `to` (Spike 7 P7.4). Keeps the editor's §7 save
+    /// baseline valid after a rename/move of the open note OR one of its ancestor
+    /// folders — otherwise `state.path` would point at a path that no longer
+    /// exists and the next save would silently re-create the old file. Returns
+    /// the new path if remapped, else `None`.
+    fn relocate_current(
+        &self,
+        from: &RelativeNotePath,
+        to: &RelativeNotePath,
+    ) -> Option<RelativeNotePath> {
+        let open = self.current()?;
+        let from_s = from.as_str();
+        let open_s = open.path.as_str();
+        let new_path = if open_s == from_s {
+            // The renamed entry WAS the open note.
+            to.clone()
+        } else {
+            // Open note nested under a renamed ancestor folder: swap the prefix.
+            let rest = open_s.strip_prefix(&format!("{from_s}/"))?;
+            let joined = std::path::PathBuf::from(to.as_str()).join(rest);
+            RelativeNotePath::new(joined).ok()?
+        };
+        self.set_current(OpenNote {
+            path: new_path.clone(),
+            opened_hash: open.opened_hash,
+        });
+        Some(new_path)
     }
 
     /// Keep the index in sync with disk for ONE path: refresh if the note

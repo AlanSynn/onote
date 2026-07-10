@@ -233,6 +233,61 @@ impl VaultRepository for FilesystemVault {
         }
     }
 
+    fn create_folder(&self, path: &RelativeNotePath) -> Result<(), VaultError> {
+        let abs = self.resolve(path)?;
+        // `create_dir_all` is idempotent: an existing folder is a no-op, and
+        // missing parents are created. §3.1 confinement is enforced by `resolve`.
+        fs::create_dir_all(&abs)?;
+        Ok(())
+    }
+
+    fn rename_entry(
+        &self,
+        from: &RelativeNotePath,
+        to: &RelativeNotePath,
+    ) -> Result<(), VaultError> {
+        let from_abs = self.resolve(from)?;
+        let to_abs = self.resolve(to)?;
+        if !from_abs.exists() {
+            return Err(VaultError::NoteNotFound(from.as_str()));
+        }
+        // §7 "never silently overwrite": Unix rename(2) atomically REPLACES an
+        // existing file target, so we gate the destination explicitly. There
+        // remains a TOCTOU window between this check and the rename (a concurrent
+        // writer landing a file at `to`), mirroring the documented window in
+        // `write_note`; the check defeats the common case and a hostile overlap
+        // only ever happens under concurrent mutation.
+        if to_abs.exists() {
+            return Err(VaultError::AlreadyExists(to.as_str()));
+        }
+        if let Some(parent) = to_abs.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(&from_abs, &to_abs)?;
+        Ok(())
+    }
+
+    fn delete_entry(&self, path: &RelativeNotePath) -> Result<(), VaultError> {
+        let abs = self.resolve(path)?;
+        // `symlink_metadata` (not `metadata`) so a leaf symlink is reported as a
+        // file and removed, not followed — consistent with the walks skipping
+        // symlinks. Missing → NoteNotFound (matches `delete_note`).
+        match fs::symlink_metadata(&abs) {
+            Ok(meta) => {
+                if meta.is_dir() {
+                    fs::remove_dir_all(&abs)?;
+                } else {
+                    fs::remove_file(&abs)?;
+                }
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(VaultError::NoteNotFound(path.as_str()))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
     fn disk_hash(&self, path: &RelativeNotePath) -> Result<Option<ContentHash>, VaultError> {
         let abs = self.resolve(path)?;
         match fs::read(&abs) {
@@ -419,8 +474,11 @@ fn write_private(path: &Path, body: &str) -> Result<(), VaultError> {
 }
 
 /// Slugify per `create_note` spec: lowercase, runs of non-`[a-z0-9]` collapse
-/// to a single `-`, then trim leading/trailing `-`.
-fn slugify(s: &str) -> String {
+/// to a single `-`, then trim leading/trailing `-`. `pub(crate)` so the
+/// application rename use case reuses the SAME rule (DRY §5) rather than
+/// re-deriving a filename policy — a note renamed in the Explorer must slugify
+/// identically to one created there.
+pub(crate) fn slugify(s: &str) -> String {
     let lower = s.to_lowercase();
     let mut out = String::with_capacity(lower.len());
     let mut prev_dash = false;
@@ -933,6 +991,142 @@ mod tests {
         std::fs::write(_dir.path().join("real.md"), "x").unwrap();
         vault.delete_note(&rel).unwrap();
         assert!(!_dir.path().join("real.md").exists());
+    }
+
+    // ── File ops: create_folder / rename_entry / delete_entry (Spike 7 P7.4) ──
+
+    #[test]
+    fn create_folder_makes_dir_and_is_idempotent() {
+        let (_dir, vault) = vault();
+        let rel = RelativeNotePath::new("Inbox/Sub").unwrap();
+        vault.create_folder(&rel).unwrap();
+        assert!(_dir.path().join("Inbox/Sub").is_dir());
+        // Second call is a no-op (not AlreadyExists — idempotent).
+        vault.create_folder(&rel).unwrap();
+        assert!(_dir.path().join("Inbox/Sub").is_dir());
+    }
+
+    #[test]
+    fn rename_entry_note_moves_file() {
+        let (_dir, vault) = vault();
+        let from = RelativeNotePath::new("old.md").unwrap();
+        std::fs::write(_dir.path().join("old.md"), "# Old").unwrap();
+        let to = RelativeNotePath::new("new.md").unwrap();
+        vault.rename_entry(&from, &to).unwrap();
+        assert!(!_dir.path().join("old.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(_dir.path().join("new.md")).unwrap(),
+            "# Old"
+        );
+    }
+
+    #[test]
+    fn rename_entry_moves_into_another_folder() {
+        let (_dir, vault) = vault();
+        std::fs::create_dir_all(_dir.path().join("Archive")).unwrap();
+        std::fs::create_dir_all(_dir.path().join("Drafts")).unwrap();
+        std::fs::write(_dir.path().join("Drafts/note.md"), "body").unwrap();
+        let from = RelativeNotePath::new("Drafts/note.md").unwrap();
+        let to = RelativeNotePath::new("Archive/note.md").unwrap();
+        vault.rename_entry(&from, &to).unwrap();
+        assert!(_dir.path().join("Archive/note.md").is_file());
+        assert!(!_dir.path().join("Drafts/note.md").exists());
+    }
+
+    #[test]
+    fn rename_entry_folder_moves_subtree() {
+        let (_dir, vault) = vault();
+        std::fs::create_dir_all(_dir.path().join("Old/a")).unwrap();
+        std::fs::write(_dir.path().join("Old/a/deep.md"), "deep").unwrap();
+        let from = RelativeNotePath::new("Old").unwrap();
+        let to = RelativeNotePath::new("New").unwrap();
+        vault.rename_entry(&from, &to).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(_dir.path().join("New/a/deep.md")).unwrap(),
+            "deep"
+        );
+        assert!(!_dir.path().join("Old").exists());
+    }
+
+    /// §7 "never silently overwrite": a busy destination is refused, and the
+    /// source is left untouched.
+    #[test]
+    fn rename_entry_refuses_busy_target_and_preserves_source() {
+        let (_dir, vault) = vault();
+        std::fs::write(_dir.path().join("a.md"), "A").unwrap();
+        std::fs::write(_dir.path().join("b.md"), "B").unwrap();
+        let from = RelativeNotePath::new("a.md").unwrap();
+        let to = RelativeNotePath::new("b.md").unwrap();
+        match vault.rename_entry(&from, &to) {
+            Err(VaultError::AlreadyExists(_)) => {}
+            other => panic!("expected AlreadyExists, got {other:?}"),
+        }
+        // Neither file was clobbered.
+        assert_eq!(
+            std::fs::read_to_string(_dir.path().join("a.md")).unwrap(),
+            "A"
+        );
+        assert_eq!(
+            std::fs::read_to_string(_dir.path().join("b.md")).unwrap(),
+            "B"
+        );
+    }
+
+    #[test]
+    fn rename_entry_missing_source_is_not_found() {
+        let (_dir, vault) = vault();
+        let from = RelativeNotePath::new("ghost.md").unwrap();
+        let to = RelativeNotePath::new("moved.md").unwrap();
+        match vault.rename_entry(&from, &to) {
+            Err(VaultError::NoteNotFound(_)) => {}
+            other => panic!("expected NoteNotFound, got {other:?}"),
+        }
+    }
+
+    /// §3.1 "must not escape the vault root": an escaping target is rejected at
+    /// `RelativeNotePath` CONSTRUCTION (`validate` rejects `..`/absolute), so it
+    /// can never reach `rename_entry` via the public API. The path type itself
+    /// is the guard; this pins that a hostile target can't be built.
+    #[test]
+    fn rename_entry_target_cannot_escape_vault_root() {
+        assert!(RelativeNotePath::from_user("../escaped.md").is_err());
+        assert!(RelativeNotePath::new("a/../../b").is_err());
+        // A clean in-vault rename still works.
+        let (_dir, vault) = vault();
+        std::fs::write(_dir.path().join("inside.md"), "x").unwrap();
+        let from = RelativeNotePath::new("inside.md").unwrap();
+        let to = RelativeNotePath::new("moved.md").unwrap();
+        vault.rename_entry(&from, &to).unwrap();
+        assert!(_dir.path().join("moved.md").exists());
+    }
+
+    #[test]
+    fn delete_entry_removes_folder_recursively() {
+        let (_dir, vault) = vault();
+        std::fs::create_dir_all(_dir.path().join("Gone/sub")).unwrap();
+        std::fs::write(_dir.path().join("Gone/sub/n.md"), "x").unwrap();
+        let rel = RelativeNotePath::new("Gone").unwrap();
+        vault.delete_entry(&rel).unwrap();
+        assert!(!_dir.path().join("Gone").exists());
+    }
+
+    #[test]
+    fn delete_entry_removes_note_file() {
+        let (_dir, vault) = vault();
+        let rel = RelativeNotePath::new("kill.md").unwrap();
+        std::fs::write(_dir.path().join("kill.md"), "x").unwrap();
+        vault.delete_entry(&rel).unwrap();
+        assert!(!_dir.path().join("kill.md").exists());
+    }
+
+    #[test]
+    fn delete_entry_missing_is_not_found() {
+        let (_dir, vault) = vault();
+        let rel = RelativeNotePath::new("nope").unwrap();
+        match vault.delete_entry(&rel) {
+            Err(VaultError::NoteNotFound(_)) => {}
+            other => panic!("expected NoteNotFound, got {other:?}"),
+        }
     }
 
     #[test]

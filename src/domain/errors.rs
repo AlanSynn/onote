@@ -50,6 +50,8 @@ pub enum VaultError {
     Escape(String),
     #[error("note not found: {0}")]
     NoteNotFound(String),
+    #[error("entry already exists: {0}")]
+    AlreadyExists(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("path not utf-8: {0}")]

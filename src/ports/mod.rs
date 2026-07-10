@@ -43,6 +43,20 @@ pub trait VaultRepository: Send + Sync {
         folder: Option<&RelativeNotePath>,
     ) -> Result<RelativeNotePath, VaultError>;
     fn delete_note(&self, path: &RelativeNotePath) -> Result<(), VaultError>;
+    /// Create a folder at `path` (Explorer file-ops, `CLAUDE.md` §3.2). Must not
+    /// escape the vault root (§3.1). Idempotent: an existing folder is a no-op.
+    fn create_folder(&self, path: &RelativeNotePath) -> Result<(), VaultError>;
+    /// Move/rename a note OR folder from `from` to `to` (Explorer file-ops).
+    /// Both paths are confined to the vault root (§3.1); a busy `to` is refused
+    /// rather than silently overwritten (§7 "never overwrite").
+    fn rename_entry(
+        &self,
+        from: &RelativeNotePath,
+        to: &RelativeNotePath,
+    ) -> Result<(), VaultError>;
+    /// Delete a note (file) OR folder (recursive) at `path` (Explorer file-ops).
+    /// Confined to the vault root (§3.1). Missing → `NoteNotFound`.
+    fn delete_entry(&self, path: &RelativeNotePath) -> Result<(), VaultError>;
     /// Recursive vault tree (folders + `.md` notes) for the Explorer drawer
     /// (`CLAUDE.md` §3.2 `note_drawer`). Returns top-level entries only; folders
     /// carry nested `children`. Folders-first + alphabetical, excluding cache/

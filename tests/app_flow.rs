@@ -673,3 +673,181 @@ fn copy_text_routes_selection_through_clipboard_port() {
         "the Clipboard port must record each write, not just the first"
     );
 }
+
+// ── Spike 7 P7.4: Explorer file ops (create_folder / rename / delete) ─────────
+//
+// End-to-end through the real FilesystemVault + SqliteNoteIndex adapters. The
+// infra unit tests pin the vault-escape / never-overwrite guards; these cover
+// the app-layer concerns the UI depends on: index sync (§6), and the open-note
+// follow-through when a rename/move relocates the editor's note.
+
+#[test]
+fn create_folder_appears_in_tree() {
+    use onote::domain::vault::{EntryKind, RelativeNotePath};
+    let tmp = tempfile::tempdir().unwrap();
+    let app = build_app(tmp.path());
+
+    let folder = RelativeNotePath::new("Inbox").unwrap();
+    app.create_folder(&folder).unwrap();
+    let folder_names: Vec<String> = app
+        .list_vault_tree()
+        .unwrap()
+        .iter()
+        .filter(|e| e.kind == EntryKind::Folder)
+        .map(|e| e.name.clone())
+        .collect();
+    assert!(
+        folder_names.contains(&"Inbox".to_string()),
+        "created folder should appear in the vault tree; got {folder_names:?}"
+    );
+    assert!(tmp.path().join("Inbox").is_dir());
+}
+
+#[test]
+fn rename_entry_note_moves_file_follows_current_and_reindexes() {
+    use onote::domain::vault::{EntryKind, RelativeNotePath};
+    let tmp = tempfile::tempdir().unwrap();
+    let app = build_app(tmp.path());
+
+    let path = app.create_note("Robot Idea", None).unwrap();
+    app.open_note(&path).unwrap();
+    assert_eq!(app.current_note().unwrap().path.as_str(), "robot-idea.md");
+
+    let from = RelativeNotePath::new("robot-idea.md").unwrap();
+    let out = app
+        .rename_entry(&from, "Cyber Bot", EntryKind::Note)
+        .unwrap();
+    assert_eq!(out.new_path.as_str(), "cyber-bot.md");
+
+    // File moved on disk.
+    assert!(!tmp.path().join("robot-idea.md").exists());
+    assert!(tmp.path().join("cyber-bot.md").exists());
+
+    // The open note followed (relocated_current + app.current both report it).
+    assert_eq!(
+        out.relocated_current
+            .as_ref()
+            .map(|p| p.as_str())
+            .as_deref(),
+        Some("cyber-bot.md"),
+    );
+    assert_eq!(app.current_note().unwrap().path.as_str(), "cyber-bot.md");
+
+    // Index tracks the NEW path (body still says "Robot Idea") and dropped the old.
+    let hits = app.search("Robot").unwrap();
+    assert!(
+        hits.iter().any(|h| h.path.as_str() == "cyber-bot.md"),
+        "renamed note searchable under its new path"
+    );
+    assert!(
+        hits.iter().all(|h| h.path.as_str() != "robot-idea.md"),
+        "old path no longer indexed"
+    );
+}
+
+#[test]
+fn rename_entry_folder_remaps_nested_current() {
+    use onote::domain::vault::{EntryKind, RelativeNotePath};
+    let tmp = tempfile::tempdir().unwrap();
+    let app = build_app(tmp.path());
+
+    let folder = RelativeNotePath::new("Projects").unwrap();
+    app.create_folder(&folder).unwrap();
+    let path = app.create_note("Alpha", Some(&folder)).unwrap();
+    app.open_note(&path).unwrap();
+    assert_eq!(
+        app.current_note().unwrap().path.as_str(),
+        "Projects/alpha.md"
+    );
+
+    // Renaming the ANCESTOR folder must remap the nested open note's path.
+    let from = RelativeNotePath::new("Projects").unwrap();
+    let out = app
+        .rename_entry(&from, "Archive", EntryKind::Folder)
+        .unwrap();
+    assert_eq!(out.new_path.as_str(), "Archive");
+    assert_eq!(
+        out.relocated_current
+            .as_ref()
+            .map(|p| p.as_str())
+            .as_deref(),
+        Some("Archive/alpha.md"),
+    );
+    assert_eq!(
+        app.current_note().unwrap().path.as_str(),
+        "Archive/alpha.md",
+    );
+    assert!(tmp.path().join("Archive/alpha.md").exists());
+    assert!(!tmp.path().join("Projects").exists());
+}
+
+#[test]
+fn rename_entry_refuses_overwrite_and_preserves_source() {
+    use onote::domain::vault::{EntryKind, RelativeNotePath};
+    let tmp = tempfile::tempdir().unwrap();
+    let app = build_app(tmp.path());
+
+    app.create_note("First", None).unwrap(); // first.md
+    app.create_note("Second", None).unwrap(); // second.md
+    let from = RelativeNotePath::new("first.md").unwrap();
+    // Rename to "Second" → target second.md already exists → §7 refuse.
+    let res = app.rename_entry(&from, "Second", EntryKind::Note);
+    assert!(
+        res.is_err(),
+        "rename onto a busy target must error (§7 never overwrite)"
+    );
+    // Neither file was clobbered.
+    assert!(tmp.path().join("first.md").exists());
+    assert!(tmp.path().join("second.md").exists());
+}
+
+#[test]
+fn delete_entry_note_clears_current_and_evicts_index() {
+    use onote::domain::vault::{EntryKind, RelativeNotePath};
+    let tmp = tempfile::tempdir().unwrap();
+    let app = build_app(tmp.path());
+
+    let path = app.create_note("Ghost Note", None).unwrap();
+    app.open_note(&path).unwrap();
+    assert!(
+        !app.search("Ghost").unwrap().is_empty(),
+        "note indexed before delete"
+    );
+
+    let rel = RelativeNotePath::new("ghost-note.md").unwrap();
+    let deleted_current = app.delete_entry(&rel, EntryKind::Note).unwrap();
+    assert!(deleted_current, "the open note was the one deleted");
+    assert!(
+        app.current_note().is_none(),
+        "current cleared after deleting the open note"
+    );
+    assert!(!tmp.path().join("ghost-note.md").exists());
+    assert!(
+        app.search("Ghost").unwrap().is_empty(),
+        "deleted note no longer searchable"
+    );
+}
+
+#[test]
+fn delete_entry_folder_removes_subtree_and_reindexes() {
+    use onote::domain::vault::{EntryKind, RelativeNotePath};
+    let tmp = tempfile::tempdir().unwrap();
+    let app = build_app(tmp.path());
+
+    let folder = RelativeNotePath::new("Tmp").unwrap();
+    app.create_folder(&folder).unwrap();
+    app.create_note("One", Some(&folder)).unwrap();
+    app.create_note("Two", Some(&folder)).unwrap();
+    assert_eq!(app.search("One").unwrap().len(), 1);
+    assert_eq!(app.search("Two").unwrap().len(), 1);
+
+    let deleted_current = app.delete_entry(&folder, EntryKind::Folder).unwrap();
+    assert!(
+        !deleted_current,
+        "the open note was not under the deleted folder"
+    );
+    assert!(!tmp.path().join("Tmp").exists(), "folder subtree removed");
+    // Reindex evicted both nested notes.
+    assert!(app.search("One").unwrap().is_empty());
+    assert!(app.search("Two").unwrap().is_empty());
+}
