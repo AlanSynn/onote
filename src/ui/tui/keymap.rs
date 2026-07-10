@@ -27,6 +27,9 @@ pub(super) enum Action {
     PasteImage,
     DeleteImageToken,
     ConflictCopy,
+    /// Toggle Explorer pane visibility + focus (`Ctrl+E`, Spike 7 P7.2).
+    /// Pane-agnostic: works from either pane.
+    ToggleExplorer,
     // Plain editing.
     InsertChar(char),
     Enter,
@@ -131,6 +134,7 @@ impl KeymapRegistry {
             ('k', Action::ConflictCopy),
             ('a', Action::SelectAll),
             ('x', Action::Cut),
+            ('e', Action::ToggleExplorer),
         ] {
             m.insert(combo(Char(c), KeyModifiers::CONTROL), a);
         }
@@ -290,6 +294,7 @@ pub(super) fn parse_action_name(name: &str) -> Option<Action> {
         "paste_image" | "paste" => Action::PasteImage,
         "delete_image_token" | "delete_image" => Action::DeleteImageToken,
         "conflict_copy" => Action::ConflictCopy,
+        "toggle_explorer" | "explorer" => Action::ToggleExplorer,
         "enter" | "newline" => Action::Enter,
         "backspace" => Action::Backspace,
         "tab" => Action::Tab,

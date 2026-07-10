@@ -44,6 +44,22 @@ pub(super) fn explorer_visibility(width: u16, cfg: &LayoutConfig) -> Visibility 
     }
 }
 
+/// Effective Explorer visibility, folding the user's manual toggle (Ctrl+E,
+/// P7.2) over the auto-show policy. `None` = auto (width-based);
+/// `Some(true)`/`Some(false)` = forced on/off. `render` calls this to decide
+/// whether to split the content row; the event handler calls it for the
+/// focus-guard (a focused-but-hidden explorer would trap keystrokes).
+pub(super) fn explorer_effective_visibility(
+    width: u16,
+    cfg: &LayoutConfig,
+    user_override: Option<bool>,
+) -> bool {
+    match user_override {
+        Some(forced) => forced,
+        None => explorer_visibility(width, cfg) == Visibility::Visible,
+    }
+}
+
 /// The Explorer's horizontal `Constraint` for a given visibility. `Hidden` is
 /// unused by `render` (it skips the split), but is provided so a future
 /// toggle-gutter can collapse to `explorer_hidden_width` rather than vanish.

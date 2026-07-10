@@ -7,6 +7,13 @@
 //! writes a conflict copy, Ctrl+Q quits. Enter over an image line opens the
 //! full-screen preview modal (§2.4); mouse wheel scrolls the viewport.
 //!
+//! Explorer drawer (§3.2 `note_drawer`, Spike 7): on wide terminals (≥
+//! `show_explorer_threshold` cols, default 100) a LEFT vault-tree pane auto-
+//! shows beside the editor. Ctrl+E toggles its visibility + focus; when
+//! focused, arrows navigate, Left/Right collapse/expand folders, Enter opens a
+//! note (or toggles a folder), Esc returns focus to the editor. Pane-agnostic
+//! keys (Save/Reload/Open/…) work from either pane.
+//!
 //! Text selection (block-select interaction): Shift+arrows extend a selection
 //! (grapheme-accurate), Ctrl+A selects all, mouse drag selects, Ctrl+Shift+C
 //! copies and Ctrl+X cuts the selection, and Ctrl+Left/Right jump by word
@@ -33,9 +40,8 @@
 //!   surface is skipped because the full-screen preview modal (Enter/Space)
 //!   already covers the need. The editor surface uses the `[image: name]` glyph
 //!   and leaves the pop-over for a later round.
-//! - **§3.2 note/preview/share drawers** are deferred: the MVP ships a single
-//!   editor pane (path bar + editor + status line) rather than the multi-drawer
-//!   layout. Drawers will layer on once the single-pane flow is stable.
+//! - **§3.2 preview/share drawers** are deferred: the LEFT Explorer drawer ships
+//!   in Spike 7; the RIGHT outline + the share drawer layer on later.
 
 use std::io::{self, Stdout};
 use std::sync::mpsc::Receiver;
@@ -63,14 +69,17 @@ use crate::application::ops::SaveOutcome;
 use crate::application::App;
 use crate::domain::note::NoteDocument;
 use crate::domain::session::ExternalChange;
-use crate::domain::vault::RelativeNotePath;
+use crate::domain::vault::{EntryKind, RelativeNotePath};
 
 mod editor;
 mod keymap;
 mod layout;
+mod note_drawer;
 mod render;
 use editor::*;
 use keymap::*;
+use layout::explorer_effective_visibility;
+use note_drawer::ActivePane;
 use render::*;
 
 type Terminal = RatatuiTerminal<CrosstermBackend<Stdout>>;
@@ -255,6 +264,11 @@ pub fn run(app: &App, initial: NoteDocument) -> Result<()> {
     // Failure to start the watcher is non-fatal — save-time conflict detection
     // (§7 optimistic concurrency) still protects data.
     let watcher_rx = app.watch(&[app.config().vault.clone()]).ok().flatten();
+    // Spike 7 P7.2: seed the Explorer tree. A load failure is non-fatal — the
+    // editor works without it; the pane just shows empty until a watch refresh.
+    if let Ok(tree) = app.list_vault_tree() {
+        state.explorer.set_tree(tree);
+    }
     main_loop(app, &mut terminal, &mut state, watcher_rx)
 }
 
@@ -290,8 +304,13 @@ fn main_loop(
         // (2) flip the status to ChangedExternally only when the OPEN note's
         // disk hash diverges from its open baseline (§7).
         if let Some(rx) = &watcher_rx {
+            // `tree_dirty` collapses a burst of changes into ONE vault re-walk,
+            // so a multi-file `git pull` / Obsidian Sync batch refreshes the
+            // Explorer once, not once per file.
+            let mut tree_dirty = false;
             while let Ok(change) = rx.try_recv() {
                 app.sync_index_for(&change.note_path);
+                tree_dirty = true;
                 if let Some(open) = app.current() {
                     if open.path == change.note_path
                         && change.new_disk_hash != open.opened_hash
@@ -299,6 +318,15 @@ fn main_loop(
                     {
                         state.status = SyncStatus::ChangedExternally;
                     }
+                }
+            }
+            // Refresh the Explorer tree once per change-batch. `set_tree`
+            // preserves the expanded-folder set + re-derives selection by
+            // `rel_path`, so an external edit/rename/delete doesn't jump the
+            // cursor or collapse the user's open folders.
+            if tree_dirty {
+                if let Ok(tree) = app.list_vault_tree() {
+                    state.explorer.set_tree(tree);
                 }
             }
         }
@@ -323,23 +351,107 @@ fn handle_event(app: &App, state: &mut EditorState, key: KeyEvent) -> Result<Con
     }
     match state.mode {
         Mode::FuzzyOpen => handle_fuzzy_event(app, state, key),
-        Mode::Edit => {
-            let ctrl = handle_edit_event(app, state, key)?;
-            // Re-anchor the viewport on the cursor after any edit-key move.
-            state.adjust_scroll(state.view_height);
-            Ok(ctrl)
-        }
+        Mode::Edit => handle_edit_mode(app, state, key),
     }
 }
 
-fn handle_edit_event(app: &App, state: &mut EditorState, key: KeyEvent) -> Result<Control> {
+/// Edit-mode key dispatch, pane-aware (Spike 7 P7.2). Pane-AGNOSTIC actions
+/// (Save/Reload/Open/Paste/ConflictCopy/DeleteImageToken/Copy/Cut +
+/// ToggleExplorer) dispatch from either pane. Pane-SPECIFIC actions (motion,
+/// Enter, Esc) go to the editor normally, OR — when the Explorer is focused —
+/// are reinterpreted as tree nav (same physical keys, different intent), so the
+/// keymap never needs per-pane bindings.
+fn handle_edit_mode(app: &App, state: &mut EditorState, key: KeyEvent) -> Result<Control> {
+    // Focus-guard: a focused-but-invisible Explorer would trap keystrokes (the
+    // terminal narrowed past the auto-show threshold, or the user forced it
+    // hidden). Drop focus to the editor so no key is lost to an invisible pane.
+    let visible = explorer_effective_visibility(
+        state.frame_width,
+        &app.config().layout,
+        state.explorer_visible_override,
+    );
+    if !visible && state.active_pane == ActivePane::Explorer {
+        state.active_pane = ActivePane::Editor;
+    }
+
     // Every edit-mode key resolves through the keymap (§5 KeymapRegistry,
-    // contract C8): no key is matched directly here. Unhandled keys (e.g.
-    // Ctrl+J, Shift+Tab) fall through to a no-op.
+    // contract C8). Unhandled keys fall through to a no-op.
     let Some(action) = state.keymap.action_for(&key) else {
         return Ok(Control::Continue);
     };
-    dispatch_edit(app, state, action)
+
+    match action {
+        Action::ToggleExplorer => {
+            toggle_explorer(state);
+            return Ok(Control::Continue);
+        }
+        // Pane-agnostic commands work regardless of focus.
+        Action::Save
+        | Action::Reload
+        | Action::OpenFuzzy
+        | Action::PasteImage
+        | Action::DeleteImageToken
+        | Action::ConflictCopy
+        | Action::Copy
+        | Action::Cut => return dispatch_and_scroll(app, state, action),
+        _ => {}
+    }
+
+    // Pane-specific actions. Explorer focus → reinterpret as tree nav; else the
+    // normal editor dispatch.
+    if state.active_pane == ActivePane::Explorer {
+        // Enter on a note opens it (focus returns to the editor). Enter on a
+        // folder, and all other pane-specific keys, route through tree nav.
+        // `.map(str::to_owned)` ends the `&state.explorer` borrow before the
+        // mutable `open_from_explorer` borrow below.
+        if action == Action::Enter && state.explorer.selected_kind() == Some(EntryKind::Note) {
+            if let Some(rel_str) = state.explorer.selected_rel_path().map(str::to_owned) {
+                let rel = RelativeNotePath::from_user(&rel_str)?;
+                return open_from_explorer(app, state, &rel);
+            }
+        }
+        apply_explorer_action(state, action);
+        return Ok(Control::Continue);
+    }
+    dispatch_and_scroll(app, state, action)
+}
+
+/// Dispatch an editor action, then re-anchor the viewport on the cursor.
+fn dispatch_and_scroll(app: &App, state: &mut EditorState, action: Action) -> Result<Control> {
+    let ctrl = dispatch_edit(app, state, action)?;
+    state.adjust_scroll(state.view_height);
+    Ok(ctrl)
+}
+
+/// Cycle Explorer visibility + focus (Ctrl+E). From the editor, show + focus
+/// the Explorer (force-visible even on a narrow terminal — explicit choice);
+/// from the Explorer, hide it and return focus to the editor.
+fn toggle_explorer(state: &mut EditorState) {
+    if state.active_pane == ActivePane::Explorer {
+        state.explorer_visible_override = Some(false);
+        state.active_pane = ActivePane::Editor;
+    } else {
+        state.explorer_visible_override = Some(true);
+        state.active_pane = ActivePane::Explorer;
+    }
+}
+
+/// Reinterpret an editor motion/Enter/Esc action as Explorer tree nav (Spike 7
+/// P7.2). The Explorer has no open-note action yet — Enter toggles a folder's
+/// expand/collapse; opening a note lands in P7.3.
+fn apply_explorer_action(state: &mut EditorState, action: Action) {
+    use Action::*;
+    match action {
+        MoveUp | SelectUp => state.explorer.up(),
+        MoveDown | SelectDown => state.explorer.down(),
+        MoveLeft | SelectLeft | WordLeft | SelectWordLeft => state.explorer.collapse_selected(),
+        MoveRight | SelectRight | WordRight | SelectWordRight => state.explorer.expand_selected(),
+        Enter => state.explorer.toggle_expand_selected(),
+        // Esc (ClearSelection in the editor) returns focus to the editor; the
+        // Explorer stays visible.
+        ClearSelection => state.active_pane = ActivePane::Editor,
+        _ => {}
+    }
 }
 
 /// Dispatch a resolved [`Action`] in edit mode. App-dependent commands (save,
@@ -782,6 +894,22 @@ fn reload(app: &App, state: &mut EditorState) -> Result<Control> {
     let doc = app.reload_current()?;
     state.reload(doc);
     state.toast("reloaded");
+    Ok(Control::Continue)
+}
+
+/// Open the note selected in the Explorer (Enter on a note row, Spike 7).
+/// Mirrors the fuzzy-open path: load via the use case, swap the editor buffer,
+/// focus the editor. The Explorer stays visible with its cursor on the opened
+/// note (two-way cursor sync lands in P7.3).
+fn open_from_explorer(
+    app: &App,
+    state: &mut EditorState,
+    rel: &RelativeNotePath,
+) -> Result<Control> {
+    let doc = app.open_note(rel)?;
+    state.reload(doc);
+    state.active_pane = ActivePane::Editor;
+    state.toast(format!("opened {}", rel.as_str()));
     Ok(Control::Continue)
 }
 

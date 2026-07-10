@@ -60,6 +60,18 @@ pub(super) struct EditorState {
     /// on demand via [`EditorState::selection`]. Endpoints are grapheme-snapped
     /// (contract C7) so é / ZWJ-emoji select as one unit.
     pub(super) selection_anchor: Option<Pos>,
+    /// Explorer drawer state (Spike 7 P7.2). Populated from `list_vault_tree` in
+    /// `run` and refreshed on file-watch; empty until then.
+    pub(super) explorer: super::note_drawer::ExplorerState,
+    /// Which pane receives pane-specific keys (arrows/Enter). Pane-agnostic keys
+    /// (Save/Reload/Open/…) dispatch from either.
+    pub(super) active_pane: super::note_drawer::ActivePane,
+    /// User toggle (Ctrl+E) overriding the auto-show width policy:
+    /// `None` = auto, `Some(true)` = force visible, `Some(false)` = force hidden.
+    pub(super) explorer_visible_override: Option<bool>,
+    /// Last rendered frame width (set in `render`). Lets the event handler
+    /// compute effective Explorer visibility for the focus-guard.
+    pub(super) frame_width: u16,
 }
 
 impl EditorState {
@@ -93,6 +105,10 @@ impl EditorState {
             mouse_dragging: false,
             keymap: KeymapRegistry::defaults(),
             selection_anchor: None,
+            explorer: super::note_drawer::ExplorerState::default(),
+            active_pane: super::note_drawer::ActivePane::default(),
+            explorer_visible_override: None,
+            frame_width: 0,
         }
     }
 
