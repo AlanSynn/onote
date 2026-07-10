@@ -119,6 +119,14 @@ impl ExplorerState {
             .map(|r| r.kind)
     }
 
+    /// Display name of the selected row (folder name, or a note's STEM) — used to
+    /// prefill the rename prompt and label the delete confirm (Spike 7 P7.4).
+    pub(super) fn selected_display_name(&self) -> Option<&str> {
+        self.selected_idx()
+            .and_then(|i| self.rows.get(i))
+            .map(|r| r.name.as_str())
+    }
+
     fn selected_idx(&self) -> Option<usize> {
         self.list.selected().filter(|&i| i < self.rows.len())
     }

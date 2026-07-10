@@ -851,3 +851,37 @@ fn delete_entry_folder_removes_subtree_and_reindexes() {
     assert!(app.search("One").unwrap().is_empty());
     assert!(app.search("Two").unwrap().is_empty());
 }
+
+/// P7.4 regression: deleting a FOLDER that contains the OPEN note must report
+/// `deleted_current = true` (not just an exact path match) and clear current.
+/// Without nested detection the editor keeps a `state.path` at a now-deleted
+/// file and the next save silently re-creates it (§7 baseline corruption). This
+/// is the delete-side parity of `relocate_current`'s nested handling on rename.
+#[test]
+fn delete_entry_folder_containing_current_is_detected() {
+    use onote::domain::vault::{EntryKind, RelativeNotePath};
+    let tmp = tempfile::tempdir().unwrap();
+    let app = build_app(tmp.path());
+
+    // Seed the default note (so the UI's post-delete `open_default` has somewhere
+    // to land) and a folder holding a nested note we then open.
+    app.open_default().unwrap();
+    let folder = RelativeNotePath::new("Tmp").unwrap();
+    app.create_folder(&folder).unwrap();
+    let nested = app.create_note("Nested", Some(&folder)).unwrap();
+    app.open_note(&nested).unwrap();
+    assert_eq!(app.current_note().unwrap().path.as_str(), "Tmp/nested.md");
+
+    let deleted_current = app.delete_entry(&folder, EntryKind::Folder).unwrap();
+    assert!(
+        deleted_current,
+        "open note nested under the deleted folder must count as deleted"
+    );
+    assert!(
+        app.current_note().is_none(),
+        "current cleared after the open note's file was removed with the folder"
+    );
+    assert!(!tmp.path().join("Tmp").exists(), "folder subtree removed");
+    // Reindex evicted the nested note (no ghost hit).
+    assert!(app.search("Nested").unwrap().is_empty());
+}

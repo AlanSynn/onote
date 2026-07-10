@@ -11,8 +11,10 @@
 //! `show_explorer_threshold` cols, default 100) a LEFT vault-tree pane auto-
 //! shows beside the editor. Ctrl+E toggles its visibility + focus; when
 //! focused, arrows navigate, Left/Right collapse/expand folders, Enter opens a
-//! note (or toggles a folder), Esc returns focus to the editor. Pane-agnostic
-//! keys (Save/Reload/Open/…) work from either pane.
+//! note (or toggles a folder), Esc returns focus to the editor. File ops
+//! (P7.4): `n` new note, `N` new folder, `r` rename, `d` delete (y/n confirm) —
+//! raw keys, only while the Explorer is focused, so they never collide with
+//! editor typing. Pane-agnostic keys (Save/Reload/Open/…) work from either pane.
 //!
 //! Text selection (block-select interaction): Shift+arrows extend a selection
 //! (grapheme-accurate), Ctrl+A selects all, mouse drag selects, Ctrl+Shift+C
@@ -51,7 +53,7 @@ use anyhow::Result;
 use crossterm::cursor::Show;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    MouseButton, MouseEvent, MouseEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -128,6 +130,34 @@ impl SyncStatus {
 pub(super) enum Mode {
     Edit,
     FuzzyOpen,
+    /// Name-entry modal for Explorer file ops (Spike 7 P7.4): `n` / `N` / `r`.
+    /// Fixed keys (Esc/Enter/Backspace/printable), not in the keymap — mirrors
+    /// the fuzzy picker.
+    Prompt,
+    /// y/n delete confirmation (Spike 7 P7.4): `d`. Fixed keys.
+    Confirm,
+}
+
+/// Which Explorer file op a `Mode::Prompt` is collecting a name for (Spike 7
+/// P7.4). New-note/new-folder start empty; rename is prefilled with the entry's
+/// display name (note stem / folder name).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PromptKind {
+    NewNote,
+    NewFolder,
+    Rename,
+}
+
+/// A raw (non-keymapped) Explorer file-op key (Spike 7 P7.4). Dispatched only
+/// when the Explorer is focused + visible, so the letters `n` / `r` / `d` can't
+/// collide with editor typing — they're intercepted before the keymap resolves
+/// them to `InsertChar`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileOp {
+    NewNote,
+    NewFolder,
+    Rename,
+    Delete,
 }
 
 /// Full-screen image preview modal (`CLAUDE.md` §2.4 Enter/Space action).
@@ -357,6 +387,8 @@ fn handle_event(app: &App, state: &mut EditorState, key: KeyEvent) -> Result<Con
     }
     match state.mode {
         Mode::FuzzyOpen => handle_fuzzy_event(app, state, key),
+        Mode::Prompt => handle_prompt_event(app, state, key),
+        Mode::Confirm => handle_confirm_event(app, state, key),
         Mode::Edit => handle_edit_mode(app, state, key),
     }
 }
@@ -378,6 +410,16 @@ fn handle_edit_mode(app: &App, state: &mut EditorState, key: KeyEvent) -> Result
     );
     if !visible && state.active_pane == ActivePane::Explorer {
         state.active_pane = ActivePane::Editor;
+    }
+
+    // Spike 7 P7.4: Explorer file-op keys are RAW (not keymapped) so the letters
+    // n / r / d can't collide with editor typing — intercepted here, only when
+    // the Explorer is focused (the focus-guard above guarantees it's visible).
+    // `n` / `N` / `r` open a name prompt; `d` opens a y/n delete confirm.
+    if state.active_pane == ActivePane::Explorer {
+        if let Some(op) = explorer_fileop(&key) {
+            return start_fileop(state, op);
+        }
     }
 
     // Every edit-mode key resolves through the keymap (§5 KeymapRegistry,
@@ -457,6 +499,244 @@ fn apply_explorer_action(state: &mut EditorState, action: Action) {
         // Explorer stays visible.
         ClearSelection => state.active_pane = ActivePane::Editor,
         _ => {}
+    }
+}
+
+// ── Explorer file ops (Spike 7 P7.4) ─────────────────────────────────────────
+//
+// Raw (non-keymapped) keys, only while the Explorer is focused. `n`/`N`/`r` open
+// a name-entry prompt modal; `d` opens a y/n delete confirm. The ops route
+// through the App use cases (create_note / create_folder / rename_entry /
+// delete_entry), then refresh the tree and follow the editor when the open note
+// moved or was deleted. The keys are fixed (not in the keymap registry) for the
+// same reason the fuzzy picker's are: they're pane/modal-local, and binding `n`
+// / `r` / `d` globally would break typing those letters in the editor.
+
+/// Resolve a raw key to an Explorer file op, or `None` if it isn't one. Shift+n
+/// arrives as either `Char('N')` or `Char('n')` + the SHIFT bit depending on the
+/// terminal, so both map to "new folder"; plain `n` is "new note".
+fn explorer_fileop(key: &KeyEvent) -> Option<FileOp> {
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    match key.code {
+        KeyCode::Char('N') => Some(FileOp::NewFolder),
+        KeyCode::Char('n') if shift => Some(FileOp::NewFolder),
+        KeyCode::Char('n') => Some(FileOp::NewNote),
+        KeyCode::Char('r') if !shift => Some(FileOp::Rename),
+        KeyCode::Char('d') if !shift => Some(FileOp::Delete),
+        _ => None,
+    }
+}
+
+/// Begin a file op: open the prompt/confirm modal. Rename/delete no-op with a
+/// toast when nothing is selected (new note/folder can run against the root even
+/// on an empty vault).
+fn start_fileop(state: &mut EditorState, op: FileOp) -> Result<Control> {
+    if matches!(op, FileOp::Delete | FileOp::Rename) && state.explorer.selected_rel_path().is_none()
+    {
+        state.toast("nothing selected");
+        return Ok(Control::Continue);
+    }
+    match op {
+        FileOp::Delete => state.mode = Mode::Confirm,
+        FileOp::NewNote | FileOp::NewFolder => {
+            state.prompt_kind = Some(match op {
+                FileOp::NewNote => PromptKind::NewNote,
+                FileOp::NewFolder => PromptKind::NewFolder,
+                // Delete is handled above; NewNote/NewFolder are the only others.
+                _ => unreachable!("FileOp::Delete handled above"),
+            });
+            state.prompt_input.clear();
+            state.mode = Mode::Prompt;
+        }
+        FileOp::Rename => {
+            // Prefill with the entry's display name (note stem / folder name) so a
+            // rename is an edit, not a retype. `.map(str::to_owned)` ends the
+            // `&state.explorer` borrow before the field writes below.
+            if let Some(name) = state.explorer.selected_display_name().map(str::to_owned) {
+                state.prompt_kind = Some(PromptKind::Rename);
+                state.prompt_input = name;
+                state.mode = Mode::Prompt;
+            }
+        }
+    }
+    Ok(Control::Continue)
+}
+
+/// Name-prompt modal keys (Spike 7 P7.4). Fixed (not keymapped): printable chars
+/// append, Backspace pops, Enter commits, Esc cancels. On a commit ERROR the
+/// modal stays open with the input preserved so the user edits + retries — e.g.
+/// a rename onto a busy target (§7 never-overwrite) must not discard the typed
+/// name.
+fn handle_prompt_event(app: &App, state: &mut EditorState, key: KeyEvent) -> Result<Control> {
+    match key.code {
+        KeyCode::Esc => close_prompt(state),
+        KeyCode::Enter => {
+            let Some(kind) = state.prompt_kind else {
+                close_prompt(state);
+                return Ok(Control::Continue);
+            };
+            let input = state.prompt_input.clone();
+            match commit_prompt(app, state, kind, &input) {
+                Ok(()) => close_prompt(state),
+                Err(e) => state.toast(format!("{e}")),
+            }
+        }
+        KeyCode::Backspace => {
+            state.prompt_input.pop();
+        }
+        // Skip control chars + Ctrl/Alt combos so they don't pollute the name
+        // (Ctrl+Q still quits — checked globally before mode dispatch).
+        KeyCode::Char(c)
+            if !c.is_control()
+                && !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            state.prompt_input.push(c);
+        }
+        _ => {}
+    }
+    Ok(Control::Continue)
+}
+
+/// y/n delete-confirm keys (Spike 7 P7.4). y/Enter deletes; n/Esc cancels.
+fn handle_confirm_event(app: &App, state: &mut EditorState, key: KeyEvent) -> Result<Control> {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+            if let Err(e) = confirm_delete(app, state) {
+                state.toast(format!("{e}"));
+            }
+            state.mode = Mode::Edit;
+        }
+        KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => state.mode = Mode::Edit,
+        _ => {}
+    }
+    Ok(Control::Continue)
+}
+
+/// Drop the prompt modal and clear its buffer.
+fn close_prompt(state: &mut EditorState) {
+    state.prompt_kind = None;
+    state.prompt_input.clear();
+    state.mode = Mode::Edit;
+}
+
+/// Execute the committed prompt: create a note/folder or rename, then refresh the
+/// tree and follow the editor when its note moved. Toasts the result.
+fn commit_prompt(app: &App, state: &mut EditorState, kind: PromptKind, input: &str) -> Result<()> {
+    match kind {
+        PromptKind::NewNote => {
+            let folder = target_parent(state)?;
+            let new_path = app.create_note(input, folder.as_ref())?;
+            // The user created a note to edit it → open + reveal + focus editor.
+            let doc = app.open_note(&new_path)?;
+            state.reload(doc);
+            state.active_pane = ActivePane::Editor;
+            refresh_tree(app, state);
+            let s = new_path.as_str();
+            state.explorer.select_note(&s);
+            state.toast(format!("created {s}"));
+        }
+        PromptKind::NewFolder => {
+            let parent = target_parent(state)?;
+            let path = compose_folder_path(parent.as_ref(), input)?;
+            app.create_folder(&path)?;
+            refresh_tree(app, state);
+            let s = path.as_str();
+            // select_note reveals the new folder (expands ancestors); the cursor
+            // stays in the Explorer for further ops.
+            state.explorer.select_note(&s);
+            state.toast(format!("created {s}"));
+        }
+        PromptKind::Rename => {
+            // Capture selection BEFORE any mutable op (ends the explorer borrow).
+            let Some(rel) = state.explorer.selected_rel_path().map(str::to_owned) else {
+                anyhow::bail!("nothing selected");
+            };
+            let Some(ekind) = state.explorer.selected_kind() else {
+                anyhow::bail!("nothing selected");
+            };
+            let from = RelativeNotePath::from_user(&rel)?;
+            let outcome = app.rename_entry(&from, input, ekind)?;
+            // If the rename relocated the OPEN note, reload the editor from its new
+            // path so `state.path` + the §7 save baseline stay valid.
+            if let Some(relocated) = outcome.relocated_current.as_ref() {
+                let doc = app.open_note(relocated)?;
+                state.reload(doc);
+            }
+            refresh_tree(app, state);
+            let s = outcome.new_path.as_str();
+            state.explorer.select_note(&s);
+            state.toast(format!("renamed → {s}"));
+        }
+    }
+    Ok(())
+}
+
+/// Run the confirmed delete, then refresh the tree and load the default note when
+/// the open note was the one removed (the editor must never point at a deleted
+/// file — §7). Re-selects the editor's current note so the pane tracks it.
+fn confirm_delete(app: &App, state: &mut EditorState) -> Result<()> {
+    let Some(rel) = state.explorer.selected_rel_path().map(str::to_owned) else {
+        anyhow::bail!("nothing selected");
+    };
+    let Some(kind) = state.explorer.selected_kind() else {
+        anyhow::bail!("nothing selected");
+    };
+    let path = RelativeNotePath::from_user(&rel)?;
+    let deleted_current = app.delete_entry(&path, kind)?;
+    if deleted_current {
+        // The open note's file is gone → fall back to the default so the buffer
+        // isn't orphaned. A failure here is non-fatal (toast); the editor keeps
+        // its buffer and the user can save it elsewhere.
+        match app.open_default() {
+            Ok(doc) => state.reload(doc),
+            Err(e) => state.toast(format!("open default failed: {e}")),
+        }
+    }
+    refresh_tree(app, state);
+    // `state.path` is now the surviving current note (the default after a
+    // current-delete, else unchanged) — reveal it so the pane tracks the editor.
+    let cur = state.path.as_str();
+    state.explorer.select_note(&cur);
+    state.toast(format!("deleted {rel}"));
+    Ok(())
+}
+
+/// Parent folder a new Explorer entry should land in: the selected folder (new
+/// entry goes INSIDE it), the selected note's parent (sibling), or the vault root
+/// (`None`) when nothing is selected or the selection is a root-level note.
+fn target_parent(state: &EditorState) -> Result<Option<RelativeNotePath>> {
+    let Some(rel) = state.explorer.selected_rel_path().map(str::to_owned) else {
+        return Ok(None);
+    };
+    match state.explorer.selected_kind() {
+        Some(EntryKind::Folder) => Ok(Some(RelativeNotePath::from_user(&rel)?)),
+        Some(EntryKind::Note) => match std::path::Path::new(&rel).parent() {
+            Some(par) if !par.as_os_str().is_empty() => Ok(Some(RelativeNotePath::new(par)?)),
+            _ => Ok(None),
+        },
+        None => Ok(None),
+    }
+}
+
+/// Compose a new folder path `parent/leaf` (or just `leaf` at the root). Folder
+/// names are kept verbatim (matching `rename_entry`'s folder rule); §3.1
+/// confinement holds because `RelativeNotePath::new` rejects `..` segments.
+fn compose_folder_path(parent: Option<&RelativeNotePath>, leaf: &str) -> Result<RelativeNotePath> {
+    let mut pb = parent
+        .map(|p| p.as_path().to_path_buf())
+        .unwrap_or_default();
+    pb.push(leaf);
+    Ok(RelativeNotePath::new(pb)?)
+}
+
+/// Re-walk the vault and refill the Explorer tree (source of truth = files, §6).
+/// `set_tree` preserves the expanded-folder set + re-derives selection by
+/// `rel_path`, so a create/rename/delete doesn't jump the cursor or collapse the
+/// user's open folders.
+fn refresh_tree(app: &App, state: &mut EditorState) {
+    if let Ok(tree) = app.list_vault_tree() {
+        state.explorer.set_tree(tree);
     }
 }
 
@@ -1220,6 +1500,114 @@ mod tests {
             s.message.as_ref().unwrap().1,
             "cut failed: ClipBoom",
             "failure rendered via Display into the toast"
+        );
+    }
+}
+
+// ── Explorer file ops (Spike 7 P7.4): pure helper unit tests ────────────────
+//
+// The App-dependent commit/confirm handlers belong in the integration harness
+// (they need the 8-dep `App`); these pin the three PURE policies the UI depends
+// on — the raw key→op map, the new-folder path (incl. §3.1 escape rejection),
+// and "where does a new entry land" (inside a folder / beside a note / root).
+
+#[cfg(test)]
+mod fileop_tests {
+    use super::*;
+    use crate::domain::vault::{EntryKind, RelativeNotePath, VaultEntry};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    /// The raw Explorer key→op map (P7.4 user-facing contract): plain `n`→note,
+    /// `N` or Shift+`n`→folder, `r`→rename, `d`→delete; anything else falls
+    /// through to the keymap. The capital-`N` + shift-`n` dual covers both ways a
+    /// terminal may report Shift+n.
+    #[test]
+    fn explorer_fileop_maps_raw_keys() {
+        let none = KeyModifiers::NONE;
+        let shift = KeyModifiers::SHIFT;
+        let k = |code, mods| explorer_fileop(&KeyEvent::new(code, mods));
+        assert_eq!(k(KeyCode::Char('n'), none), Some(FileOp::NewNote));
+        assert_eq!(k(KeyCode::Char('N'), none), Some(FileOp::NewFolder));
+        assert_eq!(k(KeyCode::Char('n'), shift), Some(FileOp::NewFolder));
+        assert_eq!(k(KeyCode::Char('r'), none), Some(FileOp::Rename));
+        assert_eq!(k(KeyCode::Char('d'), none), Some(FileOp::Delete));
+        // Shift+r / Shift+d / unrelated letters / non-char keys are NOT file ops.
+        assert_eq!(k(KeyCode::Char('r'), shift), None);
+        assert_eq!(k(KeyCode::Char('d'), shift), None);
+        assert_eq!(k(KeyCode::Char('x'), none), None);
+        assert_eq!(k(KeyCode::Enter, none), None);
+        assert_eq!(k(KeyCode::Left, none), None);
+    }
+
+    /// A new-folder path is `parent/leaf` (or just `leaf` at the root); a `..`
+    /// leaf is rejected by `RelativeNotePath::new` so the create can't escape the
+    /// vault root (§3.1).
+    #[test]
+    fn compose_folder_path_joins_and_rejects_escape() {
+        let root_leaf = compose_folder_path(None, "Inbox").expect("root leaf");
+        assert_eq!(root_leaf.as_str(), "Inbox");
+        let parent = RelativeNotePath::new("Projects").expect("parent");
+        let nested = compose_folder_path(Some(&parent), "Alpha").expect("nested");
+        assert_eq!(nested.as_str(), "Projects/Alpha");
+        // `..` is a path segment RelativeNotePath::new refuses — confinement holds.
+        assert!(
+            compose_folder_path(Some(&parent), "..").is_err(),
+            "`..` leaf must be rejected (§3.1 vault escape)"
+        );
+        assert!(
+            compose_folder_path(None, "..").is_err(),
+            "bare `..` leaf must be rejected (§3.1 vault escape)"
+        );
+    }
+
+    /// Target-parent policy: a new entry goes INSIDE a selected folder, ALONGSIDE
+    /// a selected note (its parent dir), or at the ROOT for a root-level note /
+    /// empty selection.
+    #[test]
+    fn target_parent_goes_inside_folder_alongside_note_or_root() {
+        let note = |rel: &str| VaultEntry {
+            name: rel
+                .rsplit('/')
+                .next()
+                .unwrap_or(rel)
+                .trim_end_matches(".md")
+                .to_string(),
+            rel_path: RelativeNotePath::new(rel).expect("note path"),
+            kind: EntryKind::Note,
+            children: vec![],
+        };
+        let folder = |rel: &str, kids: Vec<VaultEntry>| VaultEntry {
+            name: rel.rsplit('/').next().unwrap_or(rel).to_string(),
+            rel_path: RelativeNotePath::new(rel).expect("folder path"),
+            kind: EntryKind::Folder,
+            children: kids,
+        };
+        let mut s = state_from_body("x");
+        s.explorer.set_tree(vec![
+            folder("Projects", vec![note("Projects/alpha.md")]),
+            note("beta.md"),
+        ]);
+        // set_tree lands selection on the first row = Projects (folder) → inside.
+        assert_eq!(s.explorer.selected_rel_path(), Some("Projects"));
+        let inside = target_parent(&s).expect("folder selected");
+        assert_eq!(
+            inside.as_ref().map(|p| p.as_str()).as_deref(),
+            Some("Projects"),
+            "new entry inside the selected folder"
+        );
+        // Nested note selected → sibling parent (the folder).
+        s.explorer.select_note("Projects/alpha.md");
+        let sib = target_parent(&s).expect("nested note selected");
+        assert_eq!(
+            sib.as_ref().map(|p| p.as_str()).as_deref(),
+            Some("Projects"),
+            "new entry alongside the selected note (its parent)"
+        );
+        // Root-level note selected → None (root).
+        s.explorer.select_note("beta.md");
+        assert!(
+            target_parent(&s).unwrap().is_none(),
+            "root-level note → new entry at the vault root"
         );
     }
 }

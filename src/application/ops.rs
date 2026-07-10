@@ -277,8 +277,15 @@ impl App {
     }
 
     /// Delete a note OR folder at `path` (Explorer file-ops). Returns whether the
-    /// OPEN note was the one deleted (the UI must then load another note). §3.1
+    /// OPEN note was deleted (the UI must then load another note). §3.1
     /// confinement holds; a missing entry surfaces `NoteNotFound`.
+    ///
+    /// For a FOLDER delete, the open note counts as deleted if it sits AT or UNDER
+    /// the folder (not just on an exact path match) — `remove_dir_all` wipes the
+    /// whole subtree, so a nested open note's file is gone too. Without this the
+    /// editor would keep a `state.path` pointing at a file that no longer exists
+    /// and the next save would silently re-create it (§7 baseline corruption).
+    /// Parity with `relocate_current`'s nested-prefix handling on the rename path.
     pub fn delete_entry(&self, path: &RelativeNotePath, kind: EntryKind) -> Result<bool> {
         self.deps().vault.delete_entry(path).with_context(|| {
             format!(
@@ -287,7 +294,16 @@ impl App {
                 sanitize_for_log(path.as_str())
             )
         })?;
-        let deleted_current = self.current().is_some_and(|n| &n.path == path);
+        let deleted_current = match kind {
+            // Exact match: only that note's file was removed.
+            EntryKind::Note => self.current().is_some_and(|n| &n.path == path),
+            // The whole subtree is gone — the open note is hit if it is the folder
+            // itself or nested under `<path>/`.
+            EntryKind::Folder => self.current().is_some_and(|n| {
+                let open = n.path.as_str();
+                open == path.as_str() || open.starts_with(&format!("{}/", path.as_str()))
+            }),
+        };
         match kind {
             EntryKind::Note => {
                 if let Err(e) = self.deps().index.remove_note(path) {

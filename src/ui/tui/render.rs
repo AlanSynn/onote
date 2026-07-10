@@ -12,6 +12,7 @@ use ratatui_image::{Resize, StatefulImage};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::application::App;
+use crate::domain::vault::EntryKind;
 
 use super::editor::{
     char_count, char_to_byte, line_selection, snap_to_grapheme_start, EditorState, LineSel,
@@ -19,7 +20,7 @@ use super::editor::{
 };
 use super::layout::{explorer_constraint, explorer_effective_visibility, Visibility};
 use super::note_drawer::{render_explorer, ActivePane};
-use super::{format_size, ImageOverlay, Mode};
+use super::{format_size, ImageOverlay, Mode, PromptKind};
 
 /// Render the §9 small-terminal guard message. App-free signature
 /// (`&mut Frame` only) so a `ratatui::backend::TestBackend` unit test can
@@ -104,6 +105,12 @@ pub(super) fn render(app: &App, state: &mut EditorState, frame: &mut Frame) {
     if state.mode == Mode::FuzzyOpen {
         render_fuzzy_popup(state, frame);
     }
+    if state.mode == Mode::Prompt {
+        render_prompt_popup(state, frame);
+    }
+    if state.mode == Mode::Confirm {
+        render_confirm_popup(state, frame);
+    }
     if state.overlay.is_some() {
         render_image_overlay(state, frame);
     }
@@ -183,7 +190,9 @@ fn render_status(state: &EditorState, frame: &mut Frame, area: Rect) {
     // copy/cut/replace keys are discoverable exactly when they matter (the
     // full hint is too long for narrow terminals; the contextual swap is the
     // width-aware compromise). Ctrl+C stays "quit", so copy is ^Shift+C.
-    let hint = if state.selection().is_some() {
+    let hint = if state.active_pane == ActivePane::Explorer {
+        " explorer: n new · N folder · r rename · d delete · ←/→ fold · Enter open · Esc editor"
+    } else if state.selection().is_some() {
         " selection: ^Shift+C copy · ^X cut · type=replace · Esc clear"
     } else {
         " ^S save · ^O open · ^P paste · ^D del-img · ^R reload · Enter newline/image · ^Q quit"
@@ -237,6 +246,90 @@ fn render_fuzzy_popup(state: &EditorState, frame: &mut Frame) {
         .collect();
     let para = Paragraph::new(items).block(block);
     frame.render_widget(para, area);
+}
+
+/// Name-entry prompt modal for Explorer file ops (Spike 7 P7.4). Title names the
+/// op; the body shows the typed string with a trailing block cursor (input is
+/// tail-only — no mid-string editing — so the cursor always sits at the end).
+/// Mirrors the fuzzy popup's centered `Clear`-then-`Paragraph` pattern.
+fn render_prompt_popup(state: &EditorState, frame: &mut Frame) {
+    let area = centered_rect(60, 25, frame.area());
+    frame.render_widget(Clear, area);
+    let label = match state.prompt_kind {
+        Some(PromptKind::NewNote) => "new note",
+        Some(PromptKind::NewFolder) => "new folder",
+        Some(PromptKind::Rename) => "rename to",
+        None => "name",
+    };
+    let title = format!(" {label} — Enter ok · Esc cancel ");
+    let block = Block::default().borders(Borders::ALL).title(Span::styled(
+        title,
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    ));
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                state.prompt_input.clone(),
+                Style::default().fg(Color::White),
+            ),
+            // Tail cursor: input is appended/popped at the end only.
+            Span::styled("▍", Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  type a name · Backspace deletes · Enter confirms",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// y/n delete-confirm modal (Spike 7 P7.4). Shows the entry kind + display name
+/// being deleted, then the y/Enter vs n/Esc choices. A Red title flags the
+/// destructive intent.
+fn render_confirm_popup(state: &EditorState, frame: &mut Frame) {
+    let area = centered_rect(50, 30, frame.area());
+    frame.render_widget(Clear, area);
+    let name = state
+        .explorer
+        .selected_display_name()
+        .unwrap_or("(nothing)");
+    let kind = match state.explorer.selected_kind() {
+        Some(EntryKind::Folder) => "folder",
+        Some(EntryKind::Note) => "note",
+        None => "entry",
+    };
+    let block = Block::default().borders(Borders::ALL).title(Span::styled(
+        " confirm delete ",
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+    ));
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  delete "),
+            Span::styled(format!("{kind} "), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                name.to_string(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("?"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  this cannot be undone",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from("  y / Enter   delete"),
+        Line::from("  n / Esc     cancel"),
+    ];
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// Inline image-glyph render (`CLAUDE.md` §2.4 "editor surface"): each embed

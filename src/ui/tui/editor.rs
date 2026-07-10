@@ -14,7 +14,7 @@ use crate::domain::note::NoteDocument;
 use crate::domain::vault::RelativeNotePath;
 
 use super::keymap::{Action, KeymapRegistry};
-use super::{ImageOverlay, Mode, SyncStatus};
+use super::{ImageOverlay, Mode, PromptKind, SyncStatus};
 
 /// The editor's in-memory buffer + cursor/selection state. Constructed inside
 /// `tui::run` (mod.rs) and threaded through the handlers — never leaves the
@@ -72,6 +72,13 @@ pub(super) struct EditorState {
     /// Last rendered frame width (set in `render`). Lets the event handler
     /// compute effective Explorer visibility for the focus-guard.
     pub(super) frame_width: u16,
+    /// Active name prompt (Spike 7 P7.4 file ops): what the typed string means.
+    /// `None` unless `mode == Prompt`. Set by `n`/`N`/`r` in the Explorer pane.
+    pub(super) prompt_kind: Option<PromptKind>,
+    /// Name-prompt input buffer (Spike 7 P7.4). Appended/popped at the END only
+    /// (no mid-string cursor editing) — the block-cursor glyph in the prompt
+    /// popup always renders at the tail.
+    pub(super) prompt_input: String,
 }
 
 impl EditorState {
@@ -109,6 +116,8 @@ impl EditorState {
             active_pane: super::note_drawer::ActivePane::default(),
             explorer_visible_override: None,
             frame_width: 0,
+            prompt_kind: None,
+            prompt_input: String::new(),
         }
     }
 
