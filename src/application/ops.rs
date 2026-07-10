@@ -80,6 +80,19 @@ pub enum SaveOutcome {
     Conflict { current_disk_hash: ContentHash },
 }
 
+/// Outcome of resolving a `[[wikilink]]` / Markdown note-link target
+/// ([`App::resolve_note_link`]). The caller (TUI) decides how to surface
+/// `Ambiguous`/`NotFound` — typically a seeded fuzzy picker / a toast.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkResolution {
+    /// Exactly one note matched the target by title — open it.
+    Found(RelativeNotePath),
+    /// Multiple notes share the exact title in different folders — disambiguate.
+    Ambiguous(Vec<NoteSummary>),
+    /// No note matched the target.
+    NotFound,
+}
+
 /// Clipboard copy format selector (`CLAUDE.md` §8 `onote copy`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopyFormat {
@@ -140,6 +153,33 @@ impl App {
 
     pub fn fuzzy(&self, query: &str) -> Result<Vec<NoteSummary>> {
         Ok(self.deps().index.fuzzy_titles(query)?)
+    }
+
+    /// Resolve a `[[wikilink]]` / Markdown note-link target to a concrete note
+    /// (`CLAUDE.md` §1.2 "Obsidian-compatible" + §8 disambiguation).
+    ///
+    /// Wikilinks are **title-based** (Obsidian's convention: `[[Robot]]` means
+    /// "the note titled Robot", not a path), so resolution matches the index by
+    /// title. Only an exact, case-insensitive title match is `Found` — a fuzzy
+    /// near-match like `Robotics` is NOT silently opened for `[[Robot]]`. Two
+    /// notes sharing the exact title in different folders are `Ambiguous`; the
+    /// caller (TUI) disambiguates, typically by seeding the fuzzy picker with
+    /// the target. An empty/unknown target is `NotFound`.
+    pub fn resolve_note_link(&self, target: &str) -> Result<LinkResolution> {
+        let trimmed = target.trim();
+        if trimmed.is_empty() {
+            return Ok(LinkResolution::NotFound);
+        }
+        let exact: Vec<NoteSummary> = self
+            .fuzzy(trimmed)?
+            .into_iter()
+            .filter(|s| s.title.eq_ignore_ascii_case(trimmed))
+            .collect();
+        Ok(match exact.as_slice() {
+            [] => LinkResolution::NotFound,
+            [one] => LinkResolution::Found(one.path.clone()),
+            _ => LinkResolution::Ambiguous(exact),
+        })
     }
 
     /// Open a note by path, refresh the index, and record its baseline hash.

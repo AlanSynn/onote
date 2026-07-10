@@ -885,3 +885,77 @@ fn delete_entry_folder_containing_current_is_detected() {
     // Reindex evicted the nested note (no ghost hit).
     assert!(app.search("Nested").unwrap().is_empty());
 }
+
+// ── Spike 8: note-link resolution (`[[wikilink]]` / md-link → note) ──────────
+
+use onote::application::ops::LinkResolution;
+use onote::domain::vault::RelativeNotePath;
+
+/// `[[Robot]]` with a single note titled "Robot" resolves to that note's path.
+#[test]
+fn resolve_note_link_finds_unique_title() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = build_app(tmp.path());
+    let created = app.create_note("Robot", None).unwrap();
+
+    match app.resolve_note_link("Robot").unwrap() {
+        LinkResolution::Found(path) => assert_eq!(path, created),
+        other => panic!("expected Found, got {other:?}"),
+    }
+    // Case-insensitive + trimmed.
+    assert!(matches!(
+        app.resolve_note_link("  robot ").unwrap(),
+        LinkResolution::Found(_)
+    ));
+}
+
+/// `[[Robot]]` is NOT silently opened for a near-match titled "Robotics" — the
+/// resolver is title-exact (Obsidian semantics), so it returns NotFound and the
+/// caller can fall back to a seeded fuzzy picker.
+#[test]
+fn resolve_note_link_rejects_fuzzy_near_match() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = build_app(tmp.path());
+    app.create_note("Robotics", None).unwrap();
+
+    assert_eq!(
+        app.resolve_note_link("Robot").unwrap(),
+        LinkResolution::NotFound
+    );
+}
+
+/// Two notes sharing the exact title in different folders are ambiguous — the
+/// caller must disambiguate (§8).
+#[test]
+fn resolve_note_link_ambiguous_on_duplicate_title() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = build_app(tmp.path());
+    let a = RelativeNotePath::new("a").unwrap();
+    let b = RelativeNotePath::new("b").unwrap();
+    app.create_folder(&a).unwrap();
+    app.create_folder(&b).unwrap();
+    app.create_note("Robot", Some(&a)).unwrap();
+    app.create_note("Robot", Some(&b)).unwrap();
+
+    match app.resolve_note_link("Robot").unwrap() {
+        LinkResolution::Ambiguous(cands) => assert_eq!(cands.len(), 2),
+        other => panic!("expected Ambiguous, got {other:?}"),
+    }
+}
+
+#[test]
+fn resolve_note_link_unknown_target_is_not_found() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = build_app(tmp.path());
+    app.create_note("Robot", None).unwrap();
+
+    assert_eq!(
+        app.resolve_note_link("Ghost").unwrap(),
+        LinkResolution::NotFound
+    );
+    // Empty/whitespace target is NotFound, not an error.
+    assert_eq!(
+        app.resolve_note_link("   ").unwrap(),
+        LinkResolution::NotFound
+    );
+}
