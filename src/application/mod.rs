@@ -97,18 +97,34 @@ impl App {
 
     /// Remember the open note + baseline hash (for §7 save).
     pub(crate) fn set_current(&self, note: OpenNote) {
-        if let Ok(mut g) = self.current.lock() {
-            *g = Some(note);
+        match self.current.lock() {
+            Ok(mut g) => *g = Some(note),
+            // A poisoned mutex means a prior panic poisoned the guard. The
+            // `opened_hash` baseline is what makes `write_note` detect external
+            // edits (§7); losing it silently degrades conflict detection, so
+            // surface the degradation instead of no-oping quietly.
+            Err(_) => {
+                tracing::error!("current-note mutex poisoned; §7 conflict baseline unavailable")
+            }
         }
     }
 
     pub(crate) fn current(&self) -> Option<OpenNote> {
-        self.current.lock().ok().and_then(|g| g.clone())
+        match self.current.lock() {
+            Ok(g) => g.clone(),
+            Err(_) => {
+                tracing::error!("current-note mutex poisoned; §7 conflict baseline unavailable");
+                None
+            }
+        }
     }
 
     pub(crate) fn clear_current(&self) {
-        if let Ok(mut g) = self.current.lock() {
-            *g = None;
+        match self.current.lock() {
+            Ok(mut g) => *g = None,
+            Err(_) => {
+                tracing::error!("current-note mutex poisoned; §7 conflict baseline unavailable")
+            }
         }
     }
 }

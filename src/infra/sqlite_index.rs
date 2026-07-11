@@ -81,7 +81,15 @@ impl SqliteNoteIndex {
             let _ = std::fs::create_dir_all(parent);
         }
         let conn = Self::open_with_recovery(db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL;").ok();
+        // WAL enables concurrent readers + better crash safety. On read-only
+        // mounts / odd filesystems SQLite silently falls back to rollback
+        // journal; log the degradation so it stays diagnosable.
+        if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL;") {
+            tracing::warn!(
+                error = %e,
+                "failed to set WAL journal mode; falling back to rollback journal"
+            );
+        }
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS notes (
                path TEXT PRIMARY KEY,
