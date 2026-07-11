@@ -201,18 +201,14 @@ impl BackupService for GitCliBackup {
 
     fn pull_ff_only(&self) -> Result<BackupReport, BackupError> {
         let mut report = BackupReport::default();
-        match self.run(&["pull", "--ff-only", &self.remote]) {
-            Ok(stdout) => {
-                report.pulled = true;
-                for line in stdout.lines() {
-                    if line.contains("CONFLICT") {
-                        report.conflicts.push(line.to_string());
-                    }
-                }
-                report.message = stdout;
+        let stdout = self.run(&["pull", "--ff-only", &self.remote])?;
+        report.pulled = true;
+        for line in stdout.lines() {
+            if line.contains("CONFLICT") {
+                report.conflicts.push(line.to_string());
             }
-            Err(e) => return Err(e),
         }
+        report.message = stdout;
         Ok(report)
     }
 }
