@@ -176,7 +176,7 @@ jobs:
   # Bump the Homebrew formula + Scoop manifest to the just-released version, so
   # `brew install onote` / `scoop install onote` track each `v*` tag without a
   # manual edit. Runs AFTER `release` (assets are attached) and pushes to TWO
-  # OTHER repos (AlanSynn/homebrew-tap, AlanSynn/scoop-onote), so it authenticates
+  # OTHER repos (AlanSynn/homebrew-tap, AlanSynn/scoop), so it authenticates
   # with the TAP_GITHUB_TOKEN secret (a PAT the maintainer creates — the default
   # GITHUB_TOKEN cannot push cross-repo). See CONTRIBUTING.md "Releases" for setup.
   # If the secret is unset, the job warns and skips instead of failing the release.
@@ -252,14 +252,14 @@ jobs:
             echo "homebrew-tap bumped to ${TAG}"
           fi
 
-      - name: Bump scoop-onote (bucket/onote.json)
+      - name: Bump scoop bucket (bucket/onote.json)
         if: steps.guard.outputs.skip != 'true'
         env:
           TAG: ${{ steps.v.outputs.tag }}
           VERSION: ${{ steps.v.outputs.version }}
           WIN_SHA: ${{ steps.sha.outputs.win }}
         run: |
-          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/AlanSynn/scoop-onote.git" scoop
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/AlanSynn/scoop.git" scoop
           cd scoop
           export WIN_URL="https://github.com/AlanSynn/onote/releases/download/${TAG}/onote-x86_64-pc-windows-msvc.zip"
           python3 - <<PY
@@ -278,9 +278,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add bucket/onote.json
           if git diff --cached --quiet; then
-            echo "scoop-onote already at ${TAG}; no commit."
+            echo "scoop bucket already at ${TAG}; no commit."
           else
             git commit -m "onote ${VERSION}: bump version + windows hash"
             git push
-            echo "scoop-onote bumped to ${TAG}"
+            echo "scoop bucket bumped to ${TAG}"
           fi

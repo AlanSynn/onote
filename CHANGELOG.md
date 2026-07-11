@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - _Nothing yet._
 
+### Infrastructure
+
+- Scoop bucket consolidated to the generic [`alansynn/scoop`](https://github.com/alansynn/scoop)
+  (was the single-app `alansynn/scoop-onote`), mirroring the `homebrew-tap`
+  consolidation so the bucket can host more than just onote. Install is now
+  `scoop bucket add alansynn/scoop && scoop install onote`; the release workflow
+  bumps `alansynn/scoop` on each `v*` tag. `scoop-onote` is archived.
+
 ## [0.3.0] - 2026-07-11
 
 Editor maturity release: in-vault navigation, a file-ops Explorer drawer, text

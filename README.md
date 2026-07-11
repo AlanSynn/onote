@@ -104,7 +104,7 @@ sudo dpkg -i /tmp/onote.deb
 **Scoop** — recommended on Windows
 
 ```powershell
-scoop bucket add alansynn/scoop-onote
+scoop bucket add alansynn/scoop
 scoop install onote
 ```
 

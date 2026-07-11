@@ -58,7 +58,7 @@ it is the authoritative design spec. The load-bearing rules:
 Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds the
 binaries, attaches them to the GitHub Release, and then — in the `bump-taps`
 job — automatically bumps the **Homebrew formula** (`AlanSynn/homebrew-tap`) and
-the **Scoop manifest** (`AlanSynn/scoop-onote`) to the new version. So a single
+the **Scoop manifest** (in `AlanSynn/scoop`) to the new version. So a single
 `git tag vX.Y.Z && git push --tags` updates `brew install onote` and
 `scoop install onote` with no manual formula edit.
 
@@ -69,7 +69,7 @@ which the maintainer creates once:
 1. Create a PAT. Either:
    - a **classic** token with `repo` scope, or
    - a **fine-grained** token with `Contents: Read and write` on **both**
-     `AlanSynn/homebrew-tap` and `AlanSynn/scoop-onote`.
+     `AlanSynn/homebrew-tap` and `AlanSynn/scoop`.
 2. Add it as a repository secret named `TAP_GITHUB_TOKEN` in `AlanSynn/onote`
    (Settings → Secrets and variables → Actions → New repository secret).
 3. Done. The next tag push bumps both taps automatically.
