@@ -230,33 +230,43 @@ impl App {
         })
     }
 
-    /// Open a note by path, refresh the index, and record its baseline hash.
-    pub fn open_note(&self, path: &RelativeNotePath) -> Result<NoteDocument> {
-        let doc = self.deps().vault.read_note(path)?;
+    /// Post-read bookkeeping shared by every "open" path: refresh the search
+    /// index (§6 cache), stamp `recent_notes` for the fuzzy tiebreak (§6.2),
+    /// and set the §7 conflict baseline hash. `doc` is already read from disk;
+    /// this only runs the derived side effects and returns `doc` unchanged so
+    /// callers thread it onward. Centralized so `open_note`, `open_default`,
+    /// and `open_daily` stay in lockstep (DRY): a future change to open
+    /// bookkeeping lands in one place, never three.
+    fn remember_open(&self, doc: NoteDocument) -> NoteDocument {
         if let Err(e) = self.deps().index.refresh_note(&doc) {
             tracing::warn!(note = %sanitize_for_log(doc.path.as_str()), error = ?e, "index refresh failed; search may be stale");
         }
+        if let Err(e) = self
+            .deps()
+            .index
+            .touch_recent(&doc.path, self.now().timestamp())
+        {
+            tracing::warn!(note = %sanitize_for_log(doc.path.as_str()), error = ?e, "recency record failed; fuzzy ranking may be stale");
+        }
         self.set_current(OpenNote {
-            path: path.clone(),
+            path: doc.path.clone(),
             opened_hash: doc.content_hash.clone(),
         });
-        Ok(doc)
+        doc
+    }
+
+    /// Open a note by path, refresh the index, record recency, and set its
+    /// baseline hash (§7 conflict detection).
+    pub fn open_note(&self, path: &RelativeNotePath) -> Result<NoteDocument> {
+        let doc = self.deps().vault.read_note(path)?;
+        Ok(self.remember_open(doc))
     }
 
     /// Open the configured default note, creating it if absent.
     pub fn open_default(&self) -> Result<NoteDocument> {
         let path = self.config().vault_layout().default_note_relative()?;
         match self.deps().vault.read_note(&path) {
-            Ok(doc) => {
-                self.set_current(OpenNote {
-                    path,
-                    opened_hash: doc.content_hash.clone(),
-                });
-                if let Err(e) = self.deps().index.refresh_note(&doc) {
-                    tracing::warn!(note = %sanitize_for_log(doc.path.as_str()), error = ?e, "index refresh failed; search may be stale");
-                }
-                Ok(doc)
-            }
+            Ok(doc) => Ok(self.remember_open(doc)),
             Err(crate::domain::errors::VaultError::NoteNotFound(_)) => {
                 self.create_note_at(&path)?;
                 self.open_note(&path)
@@ -530,16 +540,7 @@ impl App {
     pub fn open_daily(&self) -> Result<NoteDocument> {
         let path = self.daily_note_path()?;
         match self.deps().vault.read_note(&path) {
-            Ok(doc) => {
-                self.set_current(OpenNote {
-                    path: path.clone(),
-                    opened_hash: doc.content_hash.clone(),
-                });
-                if let Err(e) = self.deps().index.refresh_note(&doc) {
-                    tracing::warn!(note = %sanitize_for_log(doc.path.as_str()), error = ?e, "index refresh failed; search may be stale");
-                }
-                Ok(doc)
-            }
+            Ok(doc) => Ok(self.remember_open(doc)),
             Err(crate::domain::errors::VaultError::NoteNotFound(_)) => {
                 let body = format!("# {}\n\n", self.now_local().format("%Y-%m-%d"));
                 let mtime = self.now().timestamp();

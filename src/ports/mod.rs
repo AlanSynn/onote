@@ -73,6 +73,13 @@ pub trait NoteIndex: Send + Sync {
     fn remove_note(&self, path: &RelativeNotePath) -> Result<(), IndexError>;
     fn fuzzy_titles(&self, query: &str) -> Result<Vec<NoteSummary>, IndexError>;
     fn full_text_search(&self, query: &str) -> Result<Vec<SearchHit>, IndexError>;
+    /// Record that `path` was just opened (§6.2 `recent_notes`). Backs the
+    /// recency tiebreak in `fuzzy_titles` so recently-opened notes win equal-prefix
+    /// matches. `now` is injected (epoch seconds) to keep the domain clock-free
+    /// (§3.1). Default is a no-op so fakes / `dyn` dispatch stay source-compatible.
+    fn touch_recent(&self, _path: &RelativeNotePath, _now: i64) -> Result<(), IndexError> {
+        Ok(())
+    }
     /// Replace the entire index with `notes` atomically (clear `notes` +
     /// `notes_fts`, then reinsert all in one transaction). Bootstraps the derived
     /// cache (§6) from the source-of-truth files so an existing vault's notes are

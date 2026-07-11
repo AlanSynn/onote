@@ -180,7 +180,8 @@ impl SqliteNoteIndex {
             "CREATE TABLE notes (path TEXT PRIMARY KEY, title TEXT NOT NULL,
                content_hash TEXT NOT NULL, modified_at INTEGER NOT NULL,
                indexed_at INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0);
-             CREATE VIRTUAL TABLE notes_fts USING fts5(path, title, body);",
+             CREATE VIRTUAL TABLE notes_fts USING fts5(path, title, body);
+             CREATE TABLE recent_notes (path TEXT PRIMARY KEY, opened_at INTEGER NOT NULL);",
         )
         .map_err(|e| IndexError::Sqlite(e.to_string()))?;
         Ok(Self {
@@ -225,6 +226,23 @@ impl NoteIndex for SqliteNoteIndex {
         Ok(())
     }
 
+    fn touch_recent(&self, path: &RelativeNotePath, now: i64) -> Result<(), IndexError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| IndexError::Sqlite(e.to_string()))?;
+        // UPSERT onto `recent_notes` (§6.2): a first open inserts the row, a
+        // re-open bumps `opened_at` so the note floats back to the top of the
+        // recency tiebreak in `fuzzy_titles`. One statement covers both cases —
+        // the PK on `path` makes ON CONFLICT(path) unambiguous.
+        sq(conn.execute(
+            "INSERT INTO recent_notes (path, opened_at) VALUES (?1, ?2) \
+             ON CONFLICT(path) DO UPDATE SET opened_at = excluded.opened_at",
+            params![path.as_str(), now],
+        ))?;
+        Ok(())
+    }
+
     fn rebuild(&self, notes: &[NoteDocument]) -> Result<(), IndexError> {
         let mut conn = self
             .conn
@@ -258,14 +276,23 @@ impl NoteIndex for SqliteNoteIndex {
         // limit made older notes permanently unreachable by fuzzy open once a
         // vault grew past it; 5000 keeps even large vaults fully reachable while
         // bounding the worst-case row scan.
+        // LEFT JOIN recent_notes so each candidate carries its last-opened
+        // timestamp (0 when never opened) — used as the recency tiebreak after
+        // nucleo scores. Only the typed-query path uses it; the empty-query
+        // recency surface stays ordered by modified_at (what you last edited,
+        // not merely peeked at).
         let mut stmt = sq(conn.prepare(
-            "SELECT path, title, modified_at FROM notes ORDER BY modified_at DESC LIMIT 5000",
+            "SELECT n.path, n.title, n.modified_at, COALESCE(r.opened_at, 0) \
+             FROM notes n \
+             LEFT JOIN recent_notes r ON r.path = n.path \
+             ORDER BY n.modified_at DESC LIMIT 5000",
         ))?;
-        let rows: Vec<(String, String, i64)> = sq(stmt.query_map([], |row| {
+        let rows: Vec<(String, String, i64, i64)> = sq(stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
             ))
         }))?
         .filter_map(Result::ok)
@@ -276,7 +303,7 @@ impl NoteIndex for SqliteNoteIndex {
         if query.trim().is_empty() {
             return Ok(rows
                 .into_iter()
-                .filter_map(|(p, t, m)| {
+                .filter_map(|(p, t, m, _opened_at)| {
                     Some(NoteSummary {
                         path: RelativeNotePath::from_user(&p).ok()?,
                         title: t,
@@ -289,8 +316,8 @@ impl NoteIndex for SqliteNoteIndex {
         let mut matcher = Matcher::new(Config::DEFAULT);
         let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
         let mut char_buf: Vec<char> = Vec::new();
-        let mut scored: Vec<(u32, NoteSummary)> = Vec::new();
-        for (p, t, m) in rows {
+        let mut scored: Vec<(u32, i64, NoteSummary)> = Vec::new();
+        for (p, t, m, opened_at) in rows {
             char_buf.clear();
             char_buf.extend(t.chars());
             let haystack = Utf32Str::Unicode(&char_buf);
@@ -298,6 +325,7 @@ impl NoteIndex for SqliteNoteIndex {
                 if let Ok(path) = RelativeNotePath::from_user(&p) {
                     scored.push((
                         score,
+                        opened_at,
                         NoteSummary {
                             path,
                             title: t,
@@ -307,9 +335,12 @@ impl NoteIndex for SqliteNoteIndex {
                 }
             }
         }
-        // nucleo scores: higher is better.
-        scored.sort_by_key(|s| std::cmp::Reverse(s.0));
-        Ok(scored.into_iter().map(|(_, s)| s).collect())
+        // nucleo scores: higher is better. opened_at is a pure tiebreak — among
+        // equal-scored matches, the one opened most recently floats up first. No
+        // magic bonus constant: recency only ever breaks a score tie, never
+        // overrides the fuzzy ranking itself.
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+        Ok(scored.into_iter().map(|(_, _, s)| s).collect())
     }
 
     fn full_text_search(&self, query: &str) -> Result<Vec<SearchHit>, IndexError> {
@@ -391,6 +422,74 @@ mod tests {
 
         let fz = idx.fuzzy_titles("rob").unwrap();
         assert!(fz.iter().any(|s| s.title == "Robot Idea"));
+    }
+
+    /// §6.2 `touch_recent` persists a row and UPSERTs on re-open (updates the
+    /// timestamp instead of inserting a duplicate).
+    #[test]
+    fn touch_recent_persists_and_upserts_timestamp() {
+        let idx = SqliteNoteIndex::in_memory().unwrap();
+        let path = RelativeNotePath::from_user("Notes/x.md").unwrap();
+
+        idx.touch_recent(&path, 100).unwrap();
+        let opened: i64 = {
+            let conn = idx.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT opened_at FROM recent_notes WHERE path = ?1",
+                params!["Notes/x.md"],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(opened, 100, "first touch inserts the row");
+
+        // A second touch must UPDATE, not duplicate.
+        idx.touch_recent(&path, 500).unwrap();
+        let (opened, count): (i64, i64) = {
+            let conn = idx.conn.lock().unwrap();
+            let o = conn
+                .query_row(
+                    "SELECT opened_at FROM recent_notes WHERE path = ?1",
+                    params!["Notes/x.md"],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let c = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM recent_notes WHERE path = ?1",
+                    params!["Notes/x.md"],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            (o, c)
+        };
+        assert_eq!(opened, 500, "re-open bumps the timestamp");
+        assert_eq!(count, 1, "UPSERT must update, not insert a second row");
+    }
+
+    /// Recency is a PURE tiebreak: among notes that fuzzy-match a query with
+    /// EQUAL score, the one stamped most recently via `touch_recent` ranks first.
+    /// Recency never overrides the fuzzy score itself (no magic bonus constant).
+    #[test]
+    fn fuzzy_recency_tiebreak_floats_recently_opened_first() {
+        let idx = SqliteNoteIndex::in_memory().unwrap();
+        // Identical titles ⇒ identical nucleo scores for "same", so recency is
+        // the only differentiator — proving it breaks ties, not biases ranking.
+        idx.refresh_note(&doc("a.md", "Same", "body a")).unwrap();
+        idx.refresh_note(&doc("b.md", "Same", "body b")).unwrap();
+
+        // Stamp `b` as opened; `a` stays at 0 (never opened).
+        let b = RelativeNotePath::from_user("b.md").unwrap();
+        idx.touch_recent(&b, 999).unwrap();
+
+        let fz = idx.fuzzy_titles("same").unwrap();
+        assert_eq!(fz.len(), 2, "both notes match the query");
+        assert_eq!(
+            fz[0].path.as_str(),
+            "b.md",
+            "the recently-opened note wins the score tie"
+        );
+        assert_eq!(fz[1].path.as_str(), "a.md");
     }
 
     #[test]
