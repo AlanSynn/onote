@@ -11,8 +11,7 @@ use onote::application::App;
 use onote::cli::{Cli, Command, ImgCmd};
 use onote::config::Config;
 use onote::domain::vault::RelativeNotePath;
-use onote::infra::build_deps;
-use onote::infra::logging;
+use onote::infra::{build_deps, logging, resolve_index_location};
 use onote::ui::tui;
 
 fn main() -> ExitCode {
@@ -47,8 +46,25 @@ fn try_main() -> Result<()> {
     let config = Config::load().context("loading config")?;
     ensure_vault(&config)?;
 
-    let index_db = config.vault.join(".onote").join("index.sqlite");
-    let deps = build_deps(&config, &index_db)?;
+    // §6.1: the index is derived cache. Resolve where it lives by preference —
+    // `vault/.onote/` (writable vault), then a user-cache fallback (read-only
+    // vault but writable home), then indexless. A read-only vault no longer
+    // aborts startup: the cache path keeps full-text search working, and
+    // indexless mode runs the app with search disabled + a clear message.
+    let index_location = resolve_index_location(&config);
+    if index_location.is_cache() {
+        eprintln!(
+            "onote: vault {} is read-only; using a cache-backed index (full-text search retained).",
+            config.vault.display()
+        );
+    } else if index_location.is_indexless() {
+        eprintln!(
+            "onote: vault {} is read-only and no writable cache dir was found; \
+             running without a local index (fuzzy open + full-text search disabled).",
+            config.vault.display()
+        );
+    }
+    let deps = build_deps(&config, &index_location)?;
     let app = App::new(config, deps);
 
     // Bootstrap the derived search index (§6 cache) from the source-of-truth
@@ -58,16 +74,20 @@ fn try_main() -> Result<()> {
     // `share`/`tags`) so they don't pay a full-vault walk+read proportional to
     // vault size (round-9; `share` joined the skip list in round-10, `tags` in
     // the tags-surface spike — both read note bodies directly via
-    // `vault.read_note`, never touching the index). Non-fatal: a failed rebuild
-    // only degrades search, never note editing.
-    if !matches!(
-        command,
-        Command::Backup { .. }
-            | Command::Img { .. }
-            | Command::Copy { .. }
-            | Command::Share
-            | Command::Tags
-    ) {
+    // `vault.read_note`, never touching the index). Also skip indexless mode:
+    // a NullNoteIndex rebuild is a no-op, so a full-vault read+walk would be
+    // pure waste. Non-fatal: a failed rebuild only degrades search, never
+    // note editing.
+    if !index_location.is_indexless()
+        && !matches!(
+            command,
+            Command::Backup { .. }
+                | Command::Img { .. }
+                | Command::Copy { .. }
+                | Command::Share
+                | Command::Tags
+        )
+    {
         if let Err(e) = app.reindex_all() {
             tracing::warn!(error = %e, "startup reindex failed; search may be incomplete");
         }
@@ -207,18 +227,29 @@ fn print_log() -> Result<()> {
     }
 }
 
-/// Create the vault root + `.onote/` if absent so adapters can open them.
+/// Ensure the vault root exists, and `.onote/` if it can be created.
 ///
 /// On first run (vault root absent), announce where the vault was created so
 /// the user knows where their files live — a local-first, vault-as-source-of-
 /// truth tool must not silently materialize `~/Notes/Vault/` with zero output.
+///
+/// The vault root itself is required (no root = no app), so failing to create
+/// it is fatal. But `.onote/` only holds derived index cache (§6.1) — a
+/// read-only vault can't host it, and that must NOT block startup. A missing
+/// `.onote/` is benign: the index-location resolver falls back to a
+/// cache-backed or indexless index instead.
 fn ensure_vault(cfg: &Config) -> Result<()> {
     if !cfg.vault.exists() {
         std::fs::create_dir_all(&cfg.vault)
             .with_context(|| format!("creating vault at {}", cfg.vault.display()))?;
         eprintln!("onote: initialized vault at {}", cfg.vault.display());
     }
-    std::fs::create_dir_all(cfg.vault.join(".onote"))?;
+    if let Err(e) = std::fs::create_dir_all(cfg.vault.join(".onote")) {
+        tracing::debug!(
+            error = %e,
+            "could not create vault/.onote (read-only vault?); index will use fallback or indexless mode"
+        );
+    }
     Ok(())
 }
 
