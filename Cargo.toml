@@ -68,7 +68,6 @@ arboard = "3"
 # Share server
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["fs"] }
 qr2term = "0.3"
 
 # Misc
@@ -102,6 +101,13 @@ assets = [
     ["README.md", "usr/share/doc/onote/", "644"],
     ["LICENSE", "usr/share/doc/onote/", "644"],
 ]
+
+# Dev profile: `line-tables-only` keeps panic `file:line` backtraces (which
+# matter here because `panic = "abort"` is OFF — see below) while dropping the
+# per-dependency variable debuginfo that bloats target/debug to ~12G. Dev-only;
+# CI builds release.
+[profile.dev]
+debug = "line-tables-only"
 
 # Distribution profile (`CLAUDE.md` §2.1 single-binary `curl` install). LTO +
 # single codegen unit shrink the binary and speed startup; `strip` drops debug
