@@ -55,14 +55,18 @@ fn try_main() -> Result<()> {
     // files so an existing vault's notes are queryable immediately — without
     // this, `open`/`gui`/Ctrl+O/FTS find nothing until each note is opened once.
     // Skip it for commands that never query the index (`backup`/`img`/`copy`/
-    // `share`) so they don't pay a full-vault walk+read proportional to vault
-    // size (round-9; `share` joined the skip list in round-10 — it reads the
-    // note directly via `vault.read_note` and renders Markdown, never touching
-    // the index). Non-fatal: a failed rebuild only degrades search, never note
-    // editing.
+    // `share`/`tags`) so they don't pay a full-vault walk+read proportional to
+    // vault size (round-9; `share` joined the skip list in round-10, `tags` in
+    // the tags-surface spike — both read note bodies directly via
+    // `vault.read_note`, never touching the index). Non-fatal: a failed rebuild
+    // only degrades search, never note editing.
     if !matches!(
         command,
-        Command::Backup { .. } | Command::Img { .. } | Command::Copy { .. } | Command::Share
+        Command::Backup { .. }
+            | Command::Img { .. }
+            | Command::Copy { .. }
+            | Command::Share
+            | Command::Tags
     ) {
         if let Err(e) = app.reindex_all() {
             tracing::warn!(error = %e, "startup reindex failed; search may be incomplete");
@@ -128,6 +132,16 @@ fn try_main() -> Result<()> {
             }
             app.copy_note(fmt)?;
             println!("copied as {}", fmt.label());
+        }
+        Command::Tags => {
+            let tags = app.all_tags()?;
+            if tags.is_empty() {
+                println!("(no tags found)");
+            } else {
+                for t in &tags {
+                    println!("{:>4}  #{}", t.count, t.tag);
+                }
+            }
         }
         // Handled by the early-return short-circuit above; arm present only so
         // the match stays exhaustive (the compiler can't see the prior returns).

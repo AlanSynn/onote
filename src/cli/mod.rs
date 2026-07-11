@@ -44,6 +44,8 @@ pub enum Command {
         /// Fuzzy-match query against note titles.
         query: String,
     },
+    /// List every `#tag` used in the vault with per-tag note counts.
+    Tags,
     /// Start a read-only share server for the current note.
     Share,
     /// Commit / push / pull the vault via git.

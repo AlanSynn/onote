@@ -93,6 +93,14 @@ pub enum LinkResolution {
     NotFound,
 }
 
+/// A `#tag` and how many notes use it. Powers `onote tags` (`CLAUDE.md` §1.2 —
+/// the Obsidian tag convention onote parses but had no consumer for).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagCount {
+    pub tag: String,
+    pub count: usize,
+}
+
 /// Clipboard copy format selector (`CLAUDE.md` §8 `onote copy`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopyFormat {
@@ -153,6 +161,34 @@ impl App {
 
     pub fn fuzzy(&self, query: &str) -> Result<Vec<NoteSummary>> {
         Ok(self.deps().index.fuzzy_titles(query)?)
+    }
+
+    /// Collect every `#tag` used across the vault with per-tag note counts,
+    /// sorted by count desc then tag asc (`CLAUDE.md` §1.2). Reads each note
+    /// body once; the `MarkdownLinkExtractor` port is the single source of
+    /// `#tag` parsing (DRY §5) — `extract_tags` was built + tested but had no
+    /// caller. A note that vanishes or fails to read mid-walk is skipped, not
+    /// fatal: a partial listing beats aborting `onote tags`.
+    pub fn all_tags(&self) -> Result<Vec<TagCount>> {
+        use std::collections::HashMap;
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for summary in self.list_notes()? {
+            // Skip a note that vanished or failed to read mid-walk rather than
+            // abort the whole listing.
+            let body = match self.deps().vault.read_note(&summary.path) {
+                Ok(doc) => doc.body,
+                Err(_) => continue,
+            };
+            for tag in self.deps().link_extractor.extract_tags(&body) {
+                *counts.entry(tag).or_insert(0) += 1;
+            }
+        }
+        let mut out: Vec<TagCount> = counts
+            .into_iter()
+            .map(|(tag, count)| TagCount { tag, count })
+            .collect();
+        out.sort_by(|a, b| b.count.cmp(&a.count).then(a.tag.cmp(&b.tag)));
+        Ok(out)
     }
 
     /// Resolve a `[[wikilink]]` / Markdown note-link target to a concrete note

@@ -159,6 +159,7 @@ cleanly.
 | `onote today`                        | Open today's daily note                                                     |
 | `onote new "robot idea"`             | Create a new note (slugified filename) and open it                          |
 | `onote open "robot"`                 | Fuzzy-open a note by title; disambiguates multiple matches                  |
+| `onote tags`                         | List every `#tag` in the vault with per-tag note counts                     |
 | `onote share`                        | Start a read-only HTTP share server for the current note (prints QR)        |
 | `onote backup [--push] [--pull]`     | Git commit / push / pull the vault (excludes the `.onote/` cache)           |
 | `onote gui [query]`                  | Open the (default or fuzzy-matched) note in Obsidian via `obsidian://`      |

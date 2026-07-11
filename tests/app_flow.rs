@@ -959,3 +959,40 @@ fn resolve_note_link_unknown_target_is_not_found() {
         LinkResolution::NotFound
     );
 }
+
+#[test]
+fn all_tags_counts_across_notes_and_dedupes_per_note() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    // `# Alpha` is a heading (space after #), not a tag; inline `#idea` etc. are.
+    std::fs::write(root.join("Alpha.md"), "# Alpha\n\n#idea and #robot\n").unwrap();
+    std::fs::write(root.join("Beta.md"), "# Beta\n\n#idea #todo\n").unwrap();
+    // A tag repeated within ONE note counts the note once, not twice.
+    std::fs::write(root.join("Gamma.md"), "# Gamma\n\n#robot #robot\n").unwrap();
+
+    let app = build_app(root);
+    let tags = app.all_tags().unwrap();
+    let count_of = |name: &str| -> usize {
+        tags.iter()
+            .find(|t| t.tag == name)
+            .map(|t| t.count)
+            .unwrap_or(0)
+    };
+    // idea: Alpha + Beta = 2. robot: Alpha + Gamma = 2. todo: Beta = 1.
+    assert_eq!(count_of("idea"), 2);
+    assert_eq!(count_of("robot"), 2);
+    assert_eq!(count_of("todo"), 1);
+    // Sorted by count desc, then tag asc: idea(2) before robot(2) before todo(1).
+    let names: Vec<&str> = tags.iter().map(|t| t.tag.as_str()).collect();
+    assert_eq!(names, vec!["idea", "robot", "todo"]);
+}
+
+#[test]
+fn all_tags_empty_when_no_notes_tagged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::write(root.join("Plain.md"), "# Plain\n\nno tags here\n").unwrap();
+
+    let app = build_app(root);
+    assert!(app.all_tags().unwrap().is_empty());
+}
