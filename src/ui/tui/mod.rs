@@ -130,6 +130,9 @@ impl SyncStatus {
 pub(super) enum Mode {
     Edit,
     FuzzyOpen,
+    /// Full-text body-search picker (§2.6 FTS5, `Ctrl+F`). Fixed keys, mirroring
+    /// the fuzzy picker; results carry a match snippet.
+    Search,
     /// Name-entry modal for Explorer file ops (Spike 7 P7.4): `n` / `N` / `r`.
     /// Fixed keys (Esc/Enter/Backspace/printable), not in the keymap — mirrors
     /// the fuzzy picker.
@@ -387,6 +390,7 @@ fn handle_event(app: &App, state: &mut EditorState, key: KeyEvent) -> Result<Con
     }
     match state.mode {
         Mode::FuzzyOpen => handle_fuzzy_event(app, state, key),
+        Mode::Search => handle_search_event(app, state, key),
         Mode::Prompt => handle_prompt_event(app, state, key),
         Mode::Confirm => handle_confirm_event(app, state, key),
         Mode::Edit => handle_edit_mode(app, state, key),
@@ -437,6 +441,7 @@ fn handle_edit_mode(app: &App, state: &mut EditorState, key: KeyEvent) -> Result
         Action::Save
         | Action::Reload
         | Action::OpenFuzzy
+        | Action::OpenSearch
         | Action::PasteImage
         | Action::DeleteImageToken
         | Action::ConflictCopy
@@ -756,6 +761,15 @@ fn dispatch_edit(app: &App, state: &mut EditorState, action: Action) -> Result<C
             state.mode = Mode::FuzzyOpen;
             state.fuzzy_query.clear();
             refresh_fuzzy(app, state)?;
+            Ok(Control::Continue)
+        }
+        Action::OpenSearch => {
+            // Leaving the editor surface → drop the selection (C5 lifecycle),
+            // same as the fuzzy picker.
+            state.clear_selection();
+            state.mode = Mode::Search;
+            state.search_query.clear();
+            refresh_search(app, state)?;
             Ok(Control::Continue)
         }
         Action::PasteImage => paste_image(app, state),
@@ -1157,6 +1171,59 @@ fn handle_fuzzy_event(app: &App, state: &mut EditorState, key: KeyEvent) -> Resu
 fn refresh_fuzzy(app: &App, state: &mut EditorState) -> Result<()> {
     state.fuzzy_results = app.fuzzy(&state.fuzzy_query)?;
     state.fuzzy_sel = 0;
+    Ok(())
+}
+
+/// Body-search picker events (`Ctrl+F`, §2.6 FTS5). Mirrors the fuzzy picker:
+/// Esc cancels, Enter opens the selected note (recording back-nav + tracking the
+/// Explorer pane), Backspace/Char edit the query, Up/Down move the cursor. The
+/// only difference from fuzzy is the result source — `App::search` (FTS5 MATCH
+/// over bodies) instead of title fuzzy-matching.
+fn handle_search_event(app: &App, state: &mut EditorState, key: KeyEvent) -> Result<Control> {
+    match key.code {
+        KeyCode::Esc => state.mode = Mode::Edit,
+        KeyCode::Enter => {
+            if let Some(sel) = state.search_results.get(state.search_sel).cloned() {
+                state.push_history(&sel.path);
+                let doc = app.open_note(&sel.path)?;
+                state.reload(doc);
+                // Spike 7 P7.3 two-way sync: mirror fuzzy-open — move the
+                // Explorer cursor onto the opened note so the pane tracks.
+                let rel = sel.path.as_str();
+                state.explorer.select_note(&rel);
+                state.mode = Mode::Edit;
+                state.toast(format!("opened {rel}"));
+            }
+        }
+        KeyCode::Backspace => {
+            state.search_query.pop();
+            refresh_search(app, state)?;
+        }
+        KeyCode::Up => {
+            if state.search_sel > 0 {
+                state.search_sel -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if state.search_sel + 1 < state.search_results.len() {
+                state.search_sel += 1;
+            }
+        }
+        KeyCode::Char(c) => {
+            state.search_query.push(c);
+            refresh_search(app, state)?;
+        }
+        _ => {}
+    }
+    Ok(Control::Continue)
+}
+
+fn refresh_search(app: &App, state: &mut EditorState) -> Result<()> {
+    // `App::search` (FTS5 MATCH) returns empty for an empty/whitespace query,
+    // so the picker shows nothing until the user types — unlike fuzzy, whose
+    // empty query surfaces recent notes. Body-searching "" is meaningless.
+    state.search_results = app.search(&state.search_query)?;
+    state.search_sel = 0;
     Ok(())
 }
 

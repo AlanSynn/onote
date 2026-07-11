@@ -95,6 +95,9 @@ pub(super) fn render(app: &App, state: &mut EditorState, frame: &mut Frame) {
     if state.mode == Mode::FuzzyOpen {
         render_fuzzy_popup(state, frame);
     }
+    if state.mode == Mode::Search {
+        render_search_popup(state, frame);
+    }
     if state.mode == Mode::Prompt {
         render_prompt_popup(state, frame);
     }
@@ -234,6 +237,72 @@ fn render_fuzzy_popup(state: &EditorState, frame: &mut Frame) {
             Line::from(Span::styled(text, style))
         })
         .collect();
+    let para = Paragraph::new(items).block(block);
+    frame.render_widget(para, area);
+}
+
+/// Body-search picker (§2.6 FTS5, `Ctrl+F`). Mirrors the fuzzy popup's centered
+/// `Clear`-then-`Paragraph` pattern, but each row also shows the match's FTS5
+/// `snippet` (context around the hit) — the snippet is the whole point of body
+/// search over title fuzzy-matching ("what did I write?", not "what's it
+/// called?"). Cyan accent distinguishes it from the yellow fuzzy picker.
+fn render_search_popup(state: &EditorState, frame: &mut Frame) {
+    let area = centered_rect(80, 60, frame.area());
+    let title = format!(" search body: {} ", state.search_query);
+    let block = Block::default().borders(Borders::ALL).title(Span::styled(
+        title,
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ));
+    frame.render_widget(Clear, area);
+
+    let rows = area.height.saturating_sub(2) as usize;
+    let items: Vec<Line> = state
+        .search_results
+        .iter()
+        .take(rows)
+        .enumerate()
+        .map(|(i, h)| {
+            let sel = i == state.search_sel;
+            let marker = if sel { "› " } else { "  " };
+            let head_style = if sel {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            let mut spans = vec![Span::styled(
+                format!("{marker}{} — {}", h.title, h.path.as_str()),
+                head_style,
+            )];
+            if !h.snippet.is_empty() {
+                // Snippet on the same row, dimmed. On the selected row it inherits
+                // the cyan bg (Yellow-on-Cyan stays readable; DIM-on-Cyan washes out).
+                let snip_style = if sel {
+                    Style::default().fg(Color::Yellow).bg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                spans.push(Span::styled(format!("   {}", h.snippet), snip_style));
+            }
+            Line::from(spans)
+        })
+        .collect();
+    // Empty result set: a one-line hint instead of a blank box, so the picker
+    // never reads as broken. Distinguishes "haven't typed yet" from "no match".
+    let items = if items.is_empty() {
+        let hint = if state.search_query.trim().is_empty() {
+            "type to search note bodies"
+        } else {
+            "no matches"
+        };
+        vec![Line::from(Span::styled(
+            format!("  {hint}"),
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        items
+    };
     let para = Paragraph::new(items).block(block);
     frame.render_widget(para, area);
 }

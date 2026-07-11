@@ -24,6 +24,11 @@ pub(super) enum Action {
     Save,
     Reload,
     OpenFuzzy,
+    /// Full-text body search (`Ctrl+F`, §2.6 FTS5) — opens a picker over note
+    /// BODIES (not titles), surfacing each match's `snippet` context. Complements
+    /// `OpenFuzzy` (title matching): fuzzy for "what's it called?", search for
+    /// "what did I write?".
+    OpenSearch,
     PasteImage,
     DeleteImageToken,
     ConflictCopy,
@@ -139,6 +144,7 @@ impl KeymapRegistry {
             ('c', Action::Quit),
             ('s', Action::Save),
             ('o', Action::OpenFuzzy),
+            ('f', Action::OpenSearch),
             ('p', Action::PasteImage),
             ('d', Action::DeleteImageToken),
             ('r', Action::Reload),
@@ -312,6 +318,7 @@ pub(super) fn parse_action_name(name: &str) -> Option<Action> {
         "save" => Action::Save,
         "reload" => Action::Reload,
         "open_fuzzy" | "open" => Action::OpenFuzzy,
+        "open_search" | "search" | "find" => Action::OpenSearch,
         "paste_image" | "paste" => Action::PasteImage,
         "delete_image_token" | "delete_image" => Action::DeleteImageToken,
         "conflict_copy" => Action::ConflictCopy,
@@ -488,6 +495,17 @@ mod tests {
         );
     }
 
+    /// `Ctrl+F` = body search (§2.6 FTS5). Locks the binding; the universal
+    /// "find" key is free in the edit-mode keymap (no clash with copy/save/etc.).
+    #[test]
+    fn keymap_search_bound_to_ctrl_f() {
+        let km = KeymapRegistry::defaults();
+        assert_eq!(
+            km.action_for(&KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL)),
+            Some(Action::OpenSearch)
+        );
+    }
+
     /// `[keymap]` overrides rebind known keys and add new ones; malformed
     /// specs/actions are skipped so the default survives.
     #[test]
@@ -521,6 +539,7 @@ mod tests {
             "save",
             "reload",
             "open_fuzzy",
+            "open_search",
             "paste_image",
             "delete_image_token",
             "conflict_copy",

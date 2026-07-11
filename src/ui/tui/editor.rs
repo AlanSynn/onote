@@ -32,6 +32,13 @@ pub(super) struct EditorState {
     pub(super) fuzzy_query: String,
     pub(super) fuzzy_results: Vec<crate::domain::note::NoteSummary>,
     pub(super) fuzzy_sel: usize,
+    /// Full-text body-search picker (§2.6 FTS5). Mirrors the fuzzy fields: a
+    /// query buffer + `SearchHit` results + a selection cursor. Entered via
+    /// `Ctrl+F` (`Action::OpenSearch`); results come from `App::search` (FTS5
+    /// `MATCH`), not fuzzy title matching, so it finds notes by BODY content.
+    pub(super) search_query: String,
+    pub(super) search_results: Vec<crate::domain::note::SearchHit>,
+    pub(super) search_sel: usize,
     pub(super) message: Option<(Instant, String)>,
     /// Terminal graphics-protocol detector (`None` when none is available, e.g.
     /// a plain `dumb` terminal or piped stdout). The image modal degrades to a
@@ -107,6 +114,9 @@ impl EditorState {
             fuzzy_query: String::new(),
             fuzzy_results: Vec::new(),
             fuzzy_sel: 0,
+            search_query: String::new(),
+            search_results: Vec::new(),
+            search_sel: 0,
             message: None,
             picker: None,
             overlay: None,

@@ -218,7 +218,8 @@ active selection; `Esc` clears it.
 
 | Key      | Action                                              |
 | -------- | --------------------------------------------------- |
-| `Ctrl+O` | Fuzzy-open a note                                   |
+| `Ctrl+O` | Fuzzy-open a note (by title)                        |
+| `Ctrl+F` | Full-text search note bodies (FTS5, with match snippet) |
 | `Ctrl+G` | Follow the note link under the caret (`[[wikilink]]` / Markdown link) |
 | `Ctrl+P` | Paste a clipboard image → `Attachments/` + token    |
 | `Ctrl+D` | Delete the image token under the caret              |
@@ -346,6 +347,7 @@ The `[keymap]` table remaps any editor binding. Each entry is a
 | `save`                          | `Ctrl+S`              |
 | `reload`                        | `Ctrl+R`              |
 | `open_fuzzy` / `open`           | `Ctrl+O`              |
+| `open_search` / `search` / `find` | `Ctrl+F`            |
 | `open_link`                     | `Ctrl+G`              |
 | `go_back` / `back`              | `Ctrl+B`              |
 | `paste_image` / `paste`         | `Ctrl+P`              |
