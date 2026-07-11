@@ -27,6 +27,11 @@ pub(super) enum Action {
     PasteImage,
     DeleteImageToken,
     ConflictCopy,
+    /// §7 explicit overwrite of external changes (`Ctrl+Shift+K`). Bypasses the
+    /// `opened_hash` baseline — a deliberate two-modifier escape hatch for the
+    /// conflict state. §7 forbids *defaulting* to overwrite; this is explicit,
+    /// not automatic.
+    Overwrite,
     /// Toggle Explorer pane visibility + focus (`Ctrl+E`, Spike 7 P7.2).
     /// Pane-agnostic: works from either pane.
     ToggleExplorer,
@@ -146,6 +151,14 @@ impl KeymapRegistry {
         m.insert(
             combo(Char('c'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
             Action::Copy,
+        );
+        // ^Shift+K = overwrite (distinct from ^K = conflict-copy by the SHIFT bit
+        // — the "harder" conflict resolution). Graceful degradation: a terminal
+        // that can't distinguish the SHIFT bit reports plain ^K → conflict-copy,
+        // so overwrite is unreachable rather than misfiring.
+        m.insert(
+            combo(Char('k'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            Action::Overwrite,
         );
         // Plain edit keys + forward-delete + Esc (deselect).
         m.insert(combo(Enter, KeyModifiers::NONE), Action::Enter);
@@ -298,6 +311,7 @@ pub(super) fn parse_action_name(name: &str) -> Option<Action> {
         "paste_image" | "paste" => Action::PasteImage,
         "delete_image_token" | "delete_image" => Action::DeleteImageToken,
         "conflict_copy" => Action::ConflictCopy,
+        "overwrite" => Action::Overwrite,
         "toggle_explorer" | "explorer" => Action::ToggleExplorer,
         "enter" | "newline" => Action::Enter,
         "backspace" => Action::Backspace,
@@ -439,6 +453,25 @@ mod tests {
         );
     }
 
+    /// `Ctrl+Shift+K` = overwrite (the destructive §7 conflict resolution) and
+    /// stays distinct from `Ctrl+K` = conflict-copy by the SHIFT bit. Locks the
+    /// escape-hatch binding and the K-family distinction.
+    #[test]
+    fn keymap_overwrite_distinct_from_conflict_copy() {
+        let km = KeymapRegistry::defaults();
+        assert_eq!(
+            km.action_for(&KeyEvent::new(
+                KeyCode::Char('k'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            )),
+            Some(Action::Overwrite)
+        );
+        assert_eq!(
+            km.action_for(&KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)),
+            Some(Action::ConflictCopy)
+        );
+    }
+
     /// `[keymap]` overrides rebind known keys and add new ones; malformed
     /// specs/actions are skipped so the default survives.
     #[test]
@@ -475,6 +508,7 @@ mod tests {
             "paste_image",
             "delete_image_token",
             "conflict_copy",
+            "overwrite",
             "enter",
             "backspace",
             "tab",

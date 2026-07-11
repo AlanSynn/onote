@@ -110,7 +110,7 @@ impl SyncStatus {
             Self::Clean => "clean".into(),
             Self::Dirty => "unsaved".into(),
             Self::Saving => "saving…".into(),
-            Self::Conflict => "CONFLICT: ^R reload / ^K conflict-copy".into(),
+            Self::Conflict => "CONFLICT: ^R reload / ^K copy / ^Shift+K overwrite".into(),
             Self::ChangedExternally => "changed externally".into(),
             Self::Error(e) => format!("error: {e}"),
         }
@@ -394,7 +394,7 @@ fn handle_event(app: &App, state: &mut EditorState, key: KeyEvent) -> Result<Con
 }
 
 /// Edit-mode key dispatch, pane-aware (Spike 7 P7.2). Pane-AGNOSTIC actions
-/// (Save/Reload/Open/Paste/ConflictCopy/DeleteImageToken/Copy/Cut +
+/// (Save/Reload/Open/Paste/ConflictCopy/Overwrite/DeleteImageToken/Copy/Cut +
 /// ToggleExplorer) dispatch from either pane. Pane-SPECIFIC actions (motion,
 /// Enter, Esc) go to the editor normally, OR — when the Explorer is focused —
 /// are reinterpreted as tree nav (same physical keys, different intent), so the
@@ -440,6 +440,7 @@ fn handle_edit_mode(app: &App, state: &mut EditorState, key: KeyEvent) -> Result
         | Action::PasteImage
         | Action::DeleteImageToken
         | Action::ConflictCopy
+        | Action::Overwrite
         | Action::Copy
         | Action::Cut => return dispatch_and_scroll(app, state, action),
         _ => {}
@@ -759,6 +760,8 @@ fn dispatch_edit(app: &App, state: &mut EditorState, action: Action) -> Result<C
         Action::PasteImage => paste_image(app, state),
         Action::Reload => reload(app, state),
         Action::ConflictCopy => conflict_copy(app, state),
+        // ^Shift+K overwrites external changes (§7 explicit escape hatch).
+        Action::Overwrite => force_overwrite(app, state),
         // ^G follows the [[wikilink]] / Markdown link under the caret (Spike 8).
         Action::OpenLink => open_link(app, state),
         // ^D deletes the image token under the cursor (Spike 3).
@@ -1233,6 +1236,29 @@ fn open_link(app: &App, state: &mut EditorState) -> Result<Control> {
 fn conflict_copy(app: &App, state: &mut EditorState) -> Result<Control> {
     let copy = app.write_conflict_copy(&state.body())?;
     state.toast(format!("wrote conflict copy {}", copy.as_str()));
+    Ok(Control::Continue)
+}
+
+/// §7 resolution: explicit overwrite of external changes. Writes the buffer
+/// verbatim, bypassing the `opened_hash` baseline (`force_overwrite_current`).
+/// Only meaningful from `SyncStatus::Conflict`; elsewhere it's a no-op toast.
+/// §7 forbids *defaulting* to overwrite — this fires only on the explicit
+/// `Ctrl+Shift+K` chord, never automatically.
+fn force_overwrite(app: &App, state: &mut EditorState) -> Result<Control> {
+    if state.status != SyncStatus::Conflict {
+        state.toast("no conflict to overwrite");
+        return Ok(Control::Continue);
+    }
+    match app.force_overwrite_current(&state.body()) {
+        Ok(_) => {
+            state.status = SyncStatus::Clean;
+            state.toast("overwrote external changes");
+        }
+        Err(e) => {
+            state.status = SyncStatus::Error(e.to_string());
+            state.toast(format!("overwrite failed: {e}"));
+        }
+    }
     Ok(Control::Continue)
 }
 

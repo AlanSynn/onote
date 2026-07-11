@@ -188,6 +188,7 @@ combining mark (`e` + ◌́) or a ZWJ emoji is one selectable unit, never split.
 | `Ctrl+S`           | Save (`write_note`, never silent-overwrite) |
 | `Ctrl+R`           | Reload — discard the buffer, re-read disk   |
 | `Ctrl+K`           | Conflict copy — save as `*.conflict.md`     |
+| `Ctrl+Shift+K`     | Overwrite — force-write, discarding external changes |
 
 **Navigation**
 
@@ -347,6 +348,7 @@ The `[keymap]` table remaps any editor binding. Each entry is a
 | `paste_image` / `paste`         | `Ctrl+P`              |
 | `delete_image_token` / `delete_image` | `Ctrl+D`        |
 | `conflict_copy`                 | `Ctrl+K`              |
+| `overwrite`                     | `Ctrl+Shift+K`        |
 | `enter` / `newline`             | `Enter`               |
 | `tab`                           | `Tab`                 |
 | `backspace`                     | `Backspace`           |
