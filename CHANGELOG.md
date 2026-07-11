@@ -16,6 +16,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - _Nothing yet._
 
+## [0.3.0] - 2026-07-11
+
+Editor maturity release: in-vault navigation, a file-ops Explorer drawer, text
+selection, and body search — the TUI graduates from a single-pane scratchpad to
+a navigable vault surface.
+
+### Added
+
+- **In-vault note navigation** (Spike 8): `Ctrl+G` follows the `[[wikilink]]` or
+  Markdown link under the caret (title-exact resolution; ambiguous/unknown
+  targets fall back to the fuzzy picker); `Ctrl+B` jumps back through the
+  navigation stack (link-follow / fuzzy-open / Explorer-open all push). Closes
+  the link-follow loop.
+- **Explorer file-ops drawer** (Spike 7): a left-pane vault tree that auto-shows
+  on wide terminals (≥ `show_explorer_threshold`). Create note / new folder /
+  rename / delete via prompt + confirm modals; two-way sync — the current note
+  is marked, and fuzzy/Explorer opens reveal it. `Ctrl+E` toggles visibility
+  and focus from either pane.
+- **Text block selection**: grapheme-snapped keyboard selection (`Shift+arrows`,
+  `Ctrl+←/→` and `Shift+Ctrl+←/→` word motions) and mouse-drag selection with
+  reverse-video render, drag-past-viewport autoscroll, and cut / copy / delete /
+  replace-on-Enter operations. The selection lifecycle is data-safe across
+  buffer swaps, reloads, and mode changes.
+- **Configurable keymap** (`CLAUDE.md` §5): every edit-mode keybinding is
+  remappable via a `[keymap]` table in `config.toml`.
+- **`Ctrl+F` body search** in the TUI — surfaces the FTS5 match `snippet`, the
+  §6.2 search index that was previously reachable only programmatically.
+- **`onote tags`** — lists `#tag` counts across the vault (Obsidian tag
+  convention, §1.2).
+- **Explicit overwrite** (`Ctrl+Shift+K`) for §7 conflict resolution — the
+  escape hatch the spec mandates ("never default to overwrite, but make it
+  available"); distinct from `Ctrl+K` conflict-copy by the SHIFT bit.
+- **Recency tiebreak for fuzzy open**: opening a note stamps `recent_notes`
+  (§6.2), so equal-score fuzzy matches float the recently-used note to the top.
+- Snapshot tests pinning the Explorer split geometry / responsive layout.
+
+### Changed
+
+- **§3.2 module split**: the `ui::tui` god-module is split into focused `editor`
+  / `keymap` / `render` / `note_drawer` modules; `EditorState` tightened to
+  `pub(super)` and `App::deps` to `pub(crate)`.
+- **Domain purity**: `slugify` moved out of infra into the domain;
+  image-preview delegated to `resolve_within`.
+- CI clippy (`-D warnings`) and test gates are now required checks.
+
+### Fixed
+
+- **Observability**: WAL journal-mode fallback and current-note mutex-poison
+  failures now emit a `tracing` warning instead of silently no-op'ing — the §7
+  conflict baseline is no longer invisibly lost.
+- **Selection data-safety**: stale selection anchors are cleared on buffer swap,
+  reload, and editor-surface exit; selected text is re-normalized after clamping
+  (defense-in-depth).
+
+### Dependencies
+
+- `cargo update`: 15 patch/minor bumps within existing semver bounds
+  (bytemuck, bytes, exr, memchr, zerocopy, …); no major-version jumps.
+
 ## [0.2.1] - 2026-07-08
 
 Portable Linux release: easy `apt`-style install plus a distro-agnostic static binary.
@@ -95,7 +154,8 @@ vault — local-first, single binary, no network required for core use.
   an `install.sh` installer script.
 - MIT license.
 
-[Unreleased]: https://github.com/AlanSynn/onote/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/AlanSynn/onote/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/AlanSynn/onote/releases/tag/v0.3.0
 [0.2.1]: https://github.com/AlanSynn/onote/releases/tag/v0.2.1
 [0.2.0]: https://github.com/AlanSynn/onote/releases/tag/v0.2.0
 [0.1.0]: https://github.com/AlanSynn/onote/releases/tag/v0.1.0

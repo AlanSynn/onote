@@ -21,7 +21,7 @@ FORCE_SOURCE=0
 # Default to the latest release tag so a bare `curl | sh` installs an audited,
 # pinned release instead of mutable `main` HEAD (supply-chain hardening).
 # Bump this in lockstep with each `git tag v0.x.y` and the Release workflow.
-ONOTE_TAG="${ONOTE_TAG:-v0.2.1}"
+ONOTE_TAG="${ONOTE_TAG:-v0.3.0}"
 
 usage() {
     cat <<EOF
@@ -36,7 +36,7 @@ Options:
 Environment:
   ONOTE_PREFIX     Same as --prefix
   ONOTE_REPO_URL   Clone/download URL override (default: github.com/AlanSynn/onote)
-  ONOTE_TAG        Release tag to install/build (default: v0.2.1, the latest release)
+  ONOTE_TAG        Release tag to install/build (default: v0.3.0, the latest release)
 EOF
 }
 
