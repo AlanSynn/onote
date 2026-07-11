@@ -198,6 +198,7 @@ combining mark (`e` + ◌́) or a ZWJ emoji is one selectable unit, never split.
 | `←` `→` `↑` `↓`| Move the caret                    |
 | `Home` / `End` | Jump to line start / end          |
 | `Ctrl+←` / `Ctrl+→` | Jump a word (skips whitespace, punctuation) |
+| `Ctrl+B`         | Go back to the previous note (after link-follow / fuzzy-open) |
 
 **Selection** — typing, `Enter`, `Backspace`, or `Delete` **replaces** the
 active selection; `Esc` clears it.
@@ -346,6 +347,7 @@ The `[keymap]` table remaps any editor binding. Each entry is a
 | `reload`                        | `Ctrl+R`              |
 | `open_fuzzy` / `open`           | `Ctrl+O`              |
 | `open_link`                     | `Ctrl+G`              |
+| `go_back` / `back`              | `Ctrl+B`              |
 | `paste_image` / `paste`         | `Ctrl+P`              |
 | `delete_image_token` / `delete_image` | `Ctrl+D`        |
 | `conflict_copy`                 | `Ctrl+K`              |

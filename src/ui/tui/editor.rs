@@ -79,6 +79,11 @@ pub(super) struct EditorState {
     /// (no mid-string cursor editing) — the block-cursor glyph in the prompt
     /// popup always renders at the tail.
     pub(super) prompt_input: String,
+    /// Note-navigation jump-stack for back-nav (`Ctrl+B`). Pushed on every note
+    /// switch (link-follow / Explorer-Enter / fuzzy-open); `go_back` pops LIFO.
+    /// Capped at 50 — oldest drops first. `reload` is in-place, so history
+    /// survives a buffer swap.
+    pub(super) note_history: Vec<RelativeNotePath>,
 }
 
 impl EditorState {
@@ -118,6 +123,7 @@ impl EditorState {
             frame_width: 0,
             prompt_kind: None,
             prompt_input: String::new(),
+            note_history: Vec::new(),
         }
     }
 
@@ -141,6 +147,18 @@ impl EditorState {
         // selection, so the selection (char-indexed into the OLD lines) is
         // dropped. Never carry a stale selection across a content change.
         self.selection_anchor = None;
+    }
+
+    /// Record the current note on the back-nav stack, unless the destination is
+    /// the note we're already on (a no-op open records nothing). Capped at 50.
+    pub(super) fn push_history(&mut self, dest: &RelativeNotePath) {
+        if self.path != *dest {
+            const CAP: usize = 50;
+            if self.note_history.len() >= CAP {
+                self.note_history.remove(0);
+            }
+            self.note_history.push(self.path.clone());
+        }
     }
 
     pub(super) fn cur_line(&self) -> &str {
@@ -1659,5 +1677,44 @@ mod tests {
     fn link_target_at_no_link_returns_none() {
         assert_eq!(link_target_at("plain text", 3), None);
         assert_eq!(link_target_at("", 0), None);
+    }
+
+    /// Back-nav stack: a no-op open (same note) records nothing; distinct opens
+    /// record predecessors LIFO; popping reverses the walk.
+    #[test]
+    fn push_history_records_predecessors_lifo() {
+        let mut s = state_from_body("body"); // path = Scratch.md
+        let mk = |p: &str| RelativeNotePath::new(p).unwrap();
+        // Opening the SAME note records nothing.
+        s.push_history(&mk("Scratch.md"));
+        assert!(s.note_history.is_empty());
+        // Walk Scratch → A → B → C, recording each predecessor.
+        s.push_history(&mk("A.md"));
+        s.path = mk("A.md");
+        s.push_history(&mk("B.md"));
+        s.path = mk("B.md");
+        s.push_history(&mk("C.md"));
+        assert_eq!(
+            s.note_history
+                .iter()
+                .map(|p| p.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Scratch.md", "A.md", "B.md"]
+        );
+        // LIFO pop reverses the walk.
+        assert_eq!(s.note_history.pop().unwrap().as_str(), "B.md");
+        assert_eq!(s.note_history.pop().unwrap().as_str(), "A.md");
+        assert_eq!(s.note_history.pop().unwrap().as_str(), "Scratch.md");
+        assert!(s.note_history.is_empty());
+    }
+
+    /// Back-nav stack is capped — pushing past 50 drops the oldest entry.
+    #[test]
+    fn push_history_caps_at_50() {
+        let mut s = state_from_body("body");
+        for i in 0..60 {
+            s.push_history(&RelativeNotePath::new(format!("n{i}.md")).unwrap());
+        }
+        assert_eq!(s.note_history.len(), 50);
     }
 }

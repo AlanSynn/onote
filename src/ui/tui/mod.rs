@@ -394,8 +394,8 @@ fn handle_event(app: &App, state: &mut EditorState, key: KeyEvent) -> Result<Con
 }
 
 /// Edit-mode key dispatch, pane-aware (Spike 7 P7.2). Pane-AGNOSTIC actions
-/// (Save/Reload/Open/Paste/ConflictCopy/Overwrite/DeleteImageToken/Copy/Cut +
-/// ToggleExplorer) dispatch from either pane. Pane-SPECIFIC actions (motion,
+/// (Save/Reload/Open/Paste/ConflictCopy/Overwrite/GoBack/DeleteImageToken/Copy/Cut
+/// and ToggleExplorer) dispatch from either pane. Pane-SPECIFIC actions (motion,
 /// Enter, Esc) go to the editor normally, OR — when the Explorer is focused —
 /// are reinterpreted as tree nav (same physical keys, different intent), so the
 /// keymap never needs per-pane bindings.
@@ -441,6 +441,7 @@ fn handle_edit_mode(app: &App, state: &mut EditorState, key: KeyEvent) -> Result
         | Action::DeleteImageToken
         | Action::ConflictCopy
         | Action::Overwrite
+        | Action::GoBack
         | Action::Copy
         | Action::Cut => return dispatch_and_scroll(app, state, action),
         _ => {}
@@ -762,6 +763,8 @@ fn dispatch_edit(app: &App, state: &mut EditorState, action: Action) -> Result<C
         Action::ConflictCopy => conflict_copy(app, state),
         // ^Shift+K overwrites external changes (§7 explicit escape hatch).
         Action::Overwrite => force_overwrite(app, state),
+        // ^B jumps back to the previous note (Spike 8 back-nav).
+        Action::GoBack => go_back(app, state),
         // ^G follows the [[wikilink]] / Markdown link under the caret (Spike 8).
         Action::OpenLink => open_link(app, state),
         // ^D deletes the image token under the cursor (Spike 3).
@@ -1115,6 +1118,7 @@ fn handle_fuzzy_event(app: &App, state: &mut EditorState, key: KeyEvent) -> Resu
         KeyCode::Esc => state.mode = Mode::Edit,
         KeyCode::Enter => {
             if let Some(sel) = state.fuzzy_results.get(state.fuzzy_sel).cloned() {
+                state.push_history(&sel.path);
                 let doc = app.open_note(&sel.path)?;
                 state.reload(doc);
                 // Spike 7 P7.3 two-way sync: the fuzzy open changed the editor's
@@ -1194,16 +1198,42 @@ fn reload(app: &App, state: &mut EditorState) -> Result<Control> {
     Ok(Control::Continue)
 }
 
-/// Open the note selected in the Explorer (Enter on a note row, Spike 7).
-/// Open a note by relative path into the editor: load via the use case, swap
-/// the buffer, focus the editor, toast. Shared by the Explorer's Enter-on-note
-/// and the Spike-8 link-follow (`Ctrl+G`) — hence the generic name.
-fn open_relative(app: &App, state: &mut EditorState, rel: &RelativeNotePath) -> Result<Control> {
+/// Swap the editor to `rel` (open + reload + focus editor) WITHOUT touching the
+/// note-history stack. Shared core of `open_relative` (which records history)
+/// and `go_back` (which consumes it).
+fn load_note(app: &App, state: &mut EditorState, rel: &RelativeNotePath) -> Result<Control> {
     let doc = app.open_note(rel)?;
     state.reload(doc);
     state.active_pane = ActivePane::Editor;
+    Ok(Control::Continue)
+}
+
+/// Open a note by relative path into the editor: load via the use case, swap
+/// the buffer, focus the editor, toast. Shared by the Explorer's Enter-on-note
+/// and the Spike-8 link-follow (`Ctrl+G`) — hence the generic name. Records the
+/// previous note on the back-nav stack (`Ctrl+B`).
+fn open_relative(app: &App, state: &mut EditorState, rel: &RelativeNotePath) -> Result<Control> {
+    state.push_history(rel);
+    load_note(app, state, rel)?;
     state.toast(format!("opened {}", rel.as_str()));
     Ok(Control::Continue)
+}
+
+/// Back-nav (`Ctrl+B`): pop the jump-stack and return to the predecessor note.
+/// Does NOT re-record history (otherwise back would immediately re-push the
+/// note it just left). Empty stack is a harmless toast.
+fn go_back(app: &App, state: &mut EditorState) -> Result<Control> {
+    match state.note_history.pop() {
+        Some(prev) => {
+            load_note(app, state, &prev)?;
+            state.toast("back");
+            Ok(Control::Continue)
+        }
+        None => {
+            state.toast("nothing to go back to");
+            Ok(Control::Continue)
+        }
+    }
 }
 
 /// Spike 8: follow the note link under the caret (`Ctrl+G`). Resolves the

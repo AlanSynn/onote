@@ -38,6 +38,9 @@ pub(super) enum Action {
     /// Follow the note link under the caret (`Ctrl+G`, Spike 8) — opens the
     /// `[[wikilink]]` / Markdown-link target. Editor-pane only (needs a caret).
     OpenLink,
+    /// Jump back to the previous note (`Ctrl+B`, Spike 8 back-nav). Pops the
+    /// navigation jump-stack recorded by link-follow / fuzzy-open / Explorer.
+    GoBack,
     // Plain editing.
     InsertChar(char),
     Enter,
@@ -144,6 +147,7 @@ impl KeymapRegistry {
             ('x', Action::Cut),
             ('e', Action::ToggleExplorer),
             ('g', Action::OpenLink),
+            ('b', Action::GoBack),
         ] {
             m.insert(combo(Char(c), KeyModifiers::CONTROL), a);
         }
@@ -313,6 +317,8 @@ pub(super) fn parse_action_name(name: &str) -> Option<Action> {
         "conflict_copy" => Action::ConflictCopy,
         "overwrite" => Action::Overwrite,
         "toggle_explorer" | "explorer" => Action::ToggleExplorer,
+        "open_link" => Action::OpenLink,
+        "go_back" | "back" => Action::GoBack,
         "enter" | "newline" => Action::Enter,
         "backspace" => Action::Backspace,
         "tab" => Action::Tab,
@@ -472,6 +478,16 @@ mod tests {
         );
     }
 
+    /// `Ctrl+B` = go back (Spike 8 back-nav). Locks the binding.
+    #[test]
+    fn keymap_go_back_bound_to_ctrl_b() {
+        let km = KeymapRegistry::defaults();
+        assert_eq!(
+            km.action_for(&KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL)),
+            Some(Action::GoBack)
+        );
+    }
+
     /// `[keymap]` overrides rebind known keys and add new ones; malformed
     /// specs/actions are skipped so the default survives.
     #[test]
@@ -509,6 +525,8 @@ mod tests {
             "delete_image_token",
             "conflict_copy",
             "overwrite",
+            "open_link",
+            "go_back",
             "enter",
             "backspace",
             "tab",
