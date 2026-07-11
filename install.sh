@@ -92,8 +92,9 @@ warn_path() {
             printf '\n' >&2
             printf 'NOTE: %s is not on your PATH.\n' "$PREFIX" >&2
             printf 'Add this to your shell profile (~/.zshrc or ~/.bashrc):\n' >&2
-            # shellcheck disable=SC2016 -- $PATH is literal on purpose: the
-            # user's shell expands it when the profile is sourced.
+            # $PATH is literal on purpose: the user's shell expands it when
+            # the profile is sourced.
+            # shellcheck disable=SC2016
             printf '  export PATH="%s:$PATH"\n' "$PREFIX" >&2
             ;;
     esac
