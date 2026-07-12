@@ -1,6 +1,6 @@
 ---
 import LandingLayout from '../layouts/LandingLayout.astro';
-import TerminalPane from '../components/TerminalPane.astro';
+import TerminalShot from '../components/TerminalShot.astro';
 import FeatureCard from '../components/FeatureCard.astro';
 import CopyButton from '../components/CopyButton.astro';
 const base = import.meta.env.BASE_URL.endsWith("/") ? import.meta.env.BASE_URL : import.meta.env.BASE_URL + "/";
@@ -38,15 +38,11 @@ const m = (slug: string) => `${base}manual/${slug}`;
     </div>
 
     <div class="hero__pane">
-      <TerminalPane path="~/Notes/Scratch.md" status="saved · local" caret={true}>
-<span class="t-accent">#</span> <span class="t-glyph">Scratch</span>
-
-quick ideas, always one keystroke away.
-<span class="t-muted">- ship the docs site</span>
-<span class="t-muted">- paste the screenshot (Ctrl+P)</span>
-<span class="t-info">![image: 2026-07-12-0931.png]</span>
-
-<span class="t-muted">[[ Daily/2026-07-12 ]]</span></div>
+      <TerminalShot
+        name="hero"
+        label="onote — Scratch.md"
+        alt="onote editing Scratch.md: a heading, two to-do lines, an inline image token, and a wikilink, with a clean status line."
+      />
     </div>
   </section>
 
@@ -186,15 +182,11 @@ scoop install onote`} />
   <!-- ── Demo strip ──────────────────────────────────────────────────── -->
   <section class="container demo">
     <p class="eyebrow">a real session</p>
-    <TerminalPane path="~/Notes/Notes/robot-idea.md" status="saved · local" caret={true}>
-<span class="t-accent">$</span> onote open <span class="t-glyph">"robot"</span>
-
-<span class="t-accent">#</span> <span class="t-glyph">robot idea</span>
-<span class="t-muted">a small bot that files inbox notes by tag.</span>
-
-<span class="t-info">![image: 2026-07-12-robot-sketch.png]</span>
-
-<span class="t-success">● saved</span> <span class="t-muted">· local · latte</span></div>
+    <TerminalShot
+      name="demo"
+      label="onote — Notes/robot-idea.md"
+      alt="onote open robot: a 'robot idea' note with a heading, a one-line summary, and an inline sketch image token."
+    />
   </section>
 </LandingLayout>
 

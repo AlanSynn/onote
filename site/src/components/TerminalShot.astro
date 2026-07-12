@@ -1,0 +1,81 @@
+---
+// Real onote screenshot in a framed terminal window. The PNGs are captured
+// from the actual binary (tmux capture-pane → ANSI → PNG), so what you see is
+// the real product — title bar, gutter, editor, status line and all. One
+// Latte + one Mocha shot are stacked; CSS swaps them to match the active
+// theme so the pane never clashes with the page.
+interface Props {
+  name: string;      // hero | demo  → img/term/<name>-{latte,mocha}.png
+  alt: string;
+  label?: string;    // window-chrome label next to the dots
+}
+const { name, alt, label = 'onote' } = Astro.props;
+const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : import.meta.env.BASE_URL + '/';
+const latte = `${base}img/term/${name}-latte.png`;
+const mocha = `${base}img/term/${name}-mocha.png`;
+---
+
+<figure class="tshot" role="img" aria-label={alt}>
+  <div class="tshot__chrome" aria-hidden="true">
+    <span class="tshot__dots">
+      <span class="tshot__dot tshot__dot--r"></span>
+      <span class="tshot__dot tshot__dot--y"></span>
+      <span class="tshot__dot tshot__dot--g"></span>
+    </span>
+    <span class="tshot__label">{label}</span>
+  </div>
+  <div class="tshot__body">
+    <img class="tshot__img tshot__img--latte" src={latte} alt="" loading="lazy" decoding="async" width="620" height="290" />
+    <img class="tshot__img tshot__img--mocha" src={mocha} alt="" loading="lazy" decoding="async" width="620" height="290" />
+  </div>
+</figure>
+
+<style>
+  .tshot {
+    margin: 0;
+    border: 1px solid var(--border);
+    border-radius: 0.7rem;
+    overflow: hidden;
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow);
+  }
+  .tshot__chrome {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.8rem;
+    background: var(--bar-bg);
+    border-bottom: 1px solid var(--border);
+  }
+  .tshot__dots {
+    display: inline-flex;
+    gap: 0.4rem;
+  }
+  .tshot__dot {
+    width: 0.72rem;
+    height: 0.72rem;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .tshot__dot--r { background: var(--ctp-red); }
+  .tshot__dot--y { background: var(--ctp-yellow); }
+  .tshot__dot--g { background: var(--ctp-green); }
+  .tshot__label {
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-size: 0.74rem;
+    color: var(--fg-muted);
+    letter-spacing: 0.02em;
+  }
+  .tshot__body {
+    display: block;
+    line-height: 0;
+  }
+  .tshot__img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  /* Show the shot that matches the active theme. */
+  :global(html[data-theme='latte']) .tshot__img--mocha { display: none; }
+  :global(html[data-theme='mocha']) .tshot__img--latte { display: none; }
+</style>
