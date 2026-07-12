@@ -16,6 +16,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - _Nothing yet._
 
+## [0.4.0] - 2026-07-11
+
+Cross-device + small-terminal release: the TUI stops clipping on narrow
+terminals, read-only vaults stop crashing, and the whole surface moves to a
+cohesive Catppuccin palette.
+
+### Added
+
+- **Responsive grapheme-aware text wrap** (`CLAUDE.md` §9 + F1): a line longer
+  than the terminal soft-wraps instead of being right-clipped/hidden. Wrapping
+  is by DISPLAY width (terminal cells), so 2-wide CJK/emoji and the
+  substituted `[image: name]` glyphs count their rendered columns — a line that
+  fits never wraps, a wide char never splits (every break lands on a grapheme
+  boundary), and image glyphs stay atomic under wrapping. The editor + bars
+  reflow on terminal resize. Cursor, scroll, and mouse-drag all route through
+  the wrap layout, so click/drag/autoscroll land in the right cell after a
+  reflow. A reader can still scroll away from the caret (the §2.4/§9 property).
+- **Read-only vault support + index cache fallback** (§1.2, §6.1): a read-only
+  vault (checked-out docs tree, mounted share, read-only volume) no longer
+  aborts every command at startup. The index — derived cache, fully rebuildable
+  — degrades by preference: vault `.onote/` → `$XDG_CACHE_HOME/onote/<vault>`
+  → indexless (search disabled, clear message). A plain writable `.md` folder
+  works with no `.obsidian/` required (Obsidian-compatible, not -dependent).
+- **Narrow-terminal polish for the path + status bars**: deep vault paths
+  ellipsize keeping the filename (`…/Sub/Foo.md`) instead of losing it to a
+  right-clip; the keymap hint steps full → compact → empty as width shrinks, so
+  it never clips into a half-word.
+
+### Changed
+
+- **Catppuccin theming** (§5): color/style is now a single Catppuccin source of
+  truth — the four canonical flavors (Latte = light fixed default; Frappé /
+  Macchiato / Mocha = dark) as exact `Color::Rgb` palettes, exposed through
+  semantic role accessors (accent / border / link / success / warning / error /
+  selection …). Rendering code no longer touches raw palette slots. New config
+  key `theme = "latte"` (raw string — config stays Color-ignorant, §1.3).
+
 ### Infrastructure
 
 - Scoop bucket consolidated to the generic [`alansynn/scoop`](https://github.com/alansynn/scoop)
@@ -162,7 +199,8 @@ vault — local-first, single binary, no network required for core use.
   an `install.sh` installer script.
 - MIT license.
 
-[Unreleased]: https://github.com/AlanSynn/onote/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/AlanSynn/onote/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/AlanSynn/onote/releases/tag/v0.4.0
 [0.3.0]: https://github.com/AlanSynn/onote/releases/tag/v0.3.0
 [0.2.1]: https://github.com/AlanSynn/onote/releases/tag/v0.2.1
 [0.2.0]: https://github.com/AlanSynn/onote/releases/tag/v0.2.0
