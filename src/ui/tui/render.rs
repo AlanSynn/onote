@@ -127,9 +127,12 @@ fn ellipsize_path(path: &str, budget: usize) -> String {
     // Tail-first segments: filename first, then parents.
     let segments: Vec<&str> = path.rsplit('/').collect();
     let mut kept: Vec<&str> = Vec::new();
-    let mut len = 1usize; // leading '…'
+    // Output is `…/{kept.join("/")}`: EVERY kept segment is preceded by one `/`
+    // (the leading `…/` includes the first), so each segment costs `width + 1`.
+    // `len` starts at 1 for the `…` itself (U+2026 is 1 cell).
+    let mut len = 1usize; // '…'
     for &seg in &segments {
-        let add = UnicodeWidthStr::width(seg) + if kept.is_empty() { 0 } else { 1 }; // +1 '/'
+        let add = UnicodeWidthStr::width(seg) + 1; // '/' before this segment
         if len + add > budget {
             break;
         }
@@ -1154,8 +1157,8 @@ mod tests {
 
     /// A combining mark is zero-width: its cell can't be hit, so a click past
     /// the base char's cell clamps to the line end (the grapheme-snap applied
-    /// in `display_col_to_char` then bounds it to a grapheme edge at the call
-    /// site — tested via the pure map here without snap).
+    /// in `char_at_row` then bounds it to a grapheme edge at the call site —
+    /// tested via the pure map here without snap).
     #[test]
     fn inverse_map_skips_zero_width_combining_mark() {
         let line = "e\u{0301}"; // 'e' (1 cell) + combining acute (0 cells)
@@ -1208,6 +1211,27 @@ mod tests {
     #[test]
     fn ellipsize_path_zero_budget_returns_full() {
         assert_eq!(ellipsize_path("a/b.md", 0), "a/b.md");
+    }
+
+    /// Regression: the per-segment cost must count the `/` BEFORE every kept
+    /// segment (the output is `…/{join("/")}`, so the first segment is preceded
+    /// by `…/`). Undercounting it let two segments fit at `len == budget` while
+    /// the true width was `budget + 1`, right-clipping the filename's last char
+    /// — the exact failure this feature exists to prevent. At the §9 minimum
+    /// (`area.width = 20` → `budget = 18`) the output must keep the filename and
+    /// never exceed the budget.
+    #[test]
+    fn ellipsize_path_never_overflows_budget_at_boundary() {
+        let path = "ZZZZZZZZZZ/0123456789/abc.md";
+        let s = ellipsize_path(path, 18);
+        assert!(
+            s.ends_with("abc.md"),
+            "filename must survive at the §9 minimum width: {s:?}"
+        );
+        assert!(
+            UnicodeWidthStr::width(s.as_str()) <= 18,
+            "must not overflow budget (filename was getting clipped): {s:?}"
+        );
     }
 
     /// `pick_hint` steps full → short → empty as the budget shrinks, so a narrow

@@ -171,6 +171,12 @@ impl EditorState {
         self.cx = 0;
         self.cy = 0;
         self.scroll = 0;
+        // Invalidate the visual-row layout: it was derived from the OLD note's
+        // `lines`, so its `line_idx`s now point at the wrong buffer. The next
+        // render repopulates `rows`; `adjust_scroll`'s empty-rows fallback keeps
+        // an interim read safe. Without this, any future code that touches
+        // `rows` between a reload and a render would map to the wrong line.
+        self.rows = Vec::new();
         self.status = SyncStatus::Clean;
         // C5 lifecycle: a reload swaps the buffer out from under any active
         // selection, so the selection (char-indexed into the OLD lines) is
