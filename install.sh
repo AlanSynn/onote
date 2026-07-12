@@ -7,10 +7,11 @@
 #   sh install.sh                 # from a clone
 #   sh install.sh --from-source   # force a local cargo build (skip prebuilt)
 #
-# Fast path: on x86_64 Linux the matching release ships a fully static musl
-# binary (no glibc runtime dep — runs on any distro). This script downloads and
-# installs it directly, skipping the ~2 min cargo build. Every other platform
-# (and any download failure) falls back to `cargo build --release` from source.
+# Fast path: every primary host has a matching prebuilt release binary —
+# macOS arm64/x86_64, Linux x86_64 (static musl, no glibc dep), Linux arm64.
+# This script downloads + installs the right one directly, skipping the ~2 min
+# cargo build. Any other platform (and any download failure) falls back to
+# `cargo build --release` from source.
 # set -eu aborts on any failure so a half install never happens.
 set -eu
 
@@ -21,7 +22,7 @@ FORCE_SOURCE=0
 # Default to the latest release tag so a bare `curl | sh` installs an audited,
 # pinned release instead of mutable `main` HEAD (supply-chain hardening).
 # Bump this in lockstep with each `git tag v0.x.y` and the Release workflow.
-ONOTE_TAG="${ONOTE_TAG:-v0.4.0}"
+ONOTE_TAG="${ONOTE_TAG:-v0.4.1}"
 
 usage() {
     cat <<EOF
@@ -36,7 +37,7 @@ Options:
 Environment:
   ONOTE_PREFIX     Same as --prefix
   ONOTE_REPO_URL   Clone/download URL override (default: github.com/AlanSynn/onote)
-  ONOTE_TAG        Release tag to install/build (default: v0.4.0, the latest release)
+  ONOTE_TAG        Release tag to install/build (default: v0.4.1, the latest release)
 EOF
 }
 
@@ -136,19 +137,32 @@ install_binary() {
 REPO_URL="${ONOTE_REPO_URL:-https://github.com/AlanSynn/onote.git}"
 DOWNLOAD_BASE="${REPO_URL%.git}"  # strip trailing .git for the releases/ URL
 
-# ── Prebuilt fast path (x86_64 Linux static musl) ────────────────────────
+# ── Prebuilt fast path ───────────────────────────────────────────────────
 # Returns 0 and installs on success; returns 1 to let the caller fall back to a
-# source build. `--from-source` and any non-(Linux x86_64) host skip this.
+# source build. Maps the host `(uname -s, uname -m)` to a release asset; any
+# host without a matching prebuilt (or `--from-source`, or a download failure)
+# returns 1 → source fallback.
 try_prebuilt() {
     [ "$FORCE_SOURCE" = 1 ] && return 1
-    [ "$(uname -s)" = "Linux" ] || return 1
-    [ "$(uname -m)" = "x86_64" ] || return 1
     command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || return 1
     command -v tar >/dev/null 2>&1 || return 1
 
-    URL="${DOWNLOAD_BASE}/releases/download/${ONOTE_TAG}/onote-x86_64-unknown-linux-musl.tar.gz"
+    # Resolve host → release asset. macOS arm64 reports `arm64`; Linux arm64
+    # reports `aarch64`. Linux x86_64 uses the static musl build (no glibc dep).
+    OS="$(uname -s)"
+    MACH="$(uname -m)"
+    ASSET=""
+    case "$OS:$MACH" in
+        Darwin:arm64)   ASSET="onote-aarch64-apple-darwin.tar.gz" ;;
+        Darwin:x86_64)  ASSET="onote-x86_64-apple-darwin.tar.gz" ;;
+        Linux:x86_64)   ASSET="onote-x86_64-unknown-linux-musl.tar.gz" ;;
+        Linux:aarch64)  ASSET="onote-aarch64-unknown-linux-gnu.tar.gz" ;;
+        *) return 1 ;;  # no prebuilt for this host → source fallback
+    esac
+
+    URL="${DOWNLOAD_BASE}/releases/download/${ONOTE_TAG}/${ASSET}"
     WORK_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t onote)"
-    printf 'downloading prebuilt static binary %s ...\n' "$URL" >&2
+    printf 'downloading prebuilt binary %s ...\n' "$URL" >&2
     if ! http_get "$URL" "$WORK_DIR/onote.tar.gz"; then
         printf 'download failed; falling back to build from source.\n' >&2
         rm -rf "$WORK_DIR"; WORK_DIR=""; return 1

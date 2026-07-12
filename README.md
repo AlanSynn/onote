@@ -71,10 +71,10 @@ The vault directory is plain Markdown plus an attachments folder — onote reads
 
 ## Install
 
-> Prebuilt binaries ship for **macOS** (arm64 + x86_64), **Windows** (x86_64), and
-> **Linux x86_64** (a fully static musl build plus an apt `.deb`, no runtime deps).
-> Building from source needs **Rust ≥ 1.82**; `crossterm`, `notify`, and `getrandom`
-> are cross-platform.
+> Prebuilt binaries ship for **macOS** (arm64 + x86_64), **Linux** (x86_64 static
+> musl + arm64, plus an apt `.deb`), and **Windows** (x86_64). Every install path
+> below consumes them — no Rust toolchain or compile step. (Building from source
+> needs **Rust ≥ 1.82**; `crossterm`, `notify`, and `getrandom` are cross-platform.)
 
 **Homebrew** — recommended on macOS
 
@@ -83,10 +83,8 @@ brew tap alansynn/tap
 brew install onote
 ```
 
-> The tap formula **builds from source** (it pulls `rust` as a build dep, ~2 min) —
-> it does not consume the prebuilt tarballs. For an instant binary on macOS, grab
-> the `onote-aarch64-apple-darwin.tar.gz` (or `x86_64`) from the
-> [Releases page](https://github.com/AlanSynn/onote/releases/latest) instead.
+> The tap installs the **prebuilt** darwin binary directly — seconds, no Rust, no
+> compile. Upgrades are equally fast.
 
 **Debian / Ubuntu `.deb`** — recommended on Linux x86_64
 
@@ -108,16 +106,17 @@ scoop bucket add alansynn/scoop
 scoop install onote
 ```
 
-**One-line installer** — any Linux (or any platform with Rust); downloads the
-**prebuilt static binary** on x86_64 Linux, falls back to a from-source build elsewhere
+**One-line installer** — macOS or Linux; downloads the matching **prebuilt binary**
+(macOS arm/intel, Linux x86_64 static musl, Linux arm64), falls back to a
+from-source build only on other platforms
 
 ```bash
 curl -L https://raw.githubusercontent.com/AlanSynn/onote/main/install.sh | sh
 ```
 
-On x86_64 Linux this skips the ~2 min `cargo build` and lands the binary in
-`~/.local/bin`; other platforms build the pinned release via `cargo`. (Pin a
-specific version with `ONOTE_TAG=v0.x.y`; force a source build with `--from-source`.)
+On a supported host this lands the binary in `~/.local/bin` in seconds — no
+`cargo build`. (Pin a version with `ONOTE_TAG=v0.x.y`; force a source build with
+`--from-source`.)
 
 **Build from source** — dev / latest
 

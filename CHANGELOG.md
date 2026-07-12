@@ -16,6 +16,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - _Nothing yet._
 
+## [0.4.1] - 2026-07-12
+
+Packaging release: every install surface now ships a **prebuilt binary** — no
+source compile, fast installs/upgrades across the board.
+
+### Changed
+
+- **Homebrew formula is now prebuilt** — `brew install onote` / `brew upgrade
+  onote` install the matching darwin binary directly (`bin.install`, per-arch
+  `on_arm`/`on_intel` tarball urls + sha256), instead of pulling `rust` and
+  running `cargo install` (~2 min). The release workflow regenerates the formula
+  from a template each tag.
+- **`install.sh` prebuilt on macOS + Linux arm64** — the one-line installer now
+  downloads the prebuilt binary on macOS arm/intel and Linux arm64 too (Linux
+  x86_64 was already prebuilt). Source build is now only a fallback for unusual
+  hosts or `--from-source`.
+- **Linux arm64 prebuilt added** — the release build matrix now produces an
+  `aarch64-unknown-linux-gnu` tarball, so Linux arm64 (RPi, arm servers) gets a
+  prebuilt instead of a source build.
+
 ## [0.4.0] - 2026-07-11
 
 Cross-device + small-terminal release: the TUI stops clipping on narrow
@@ -199,7 +219,8 @@ vault — local-first, single binary, no network required for core use.
   an `install.sh` installer script.
 - MIT license.
 
-[Unreleased]: https://github.com/AlanSynn/onote/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/AlanSynn/onote/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/AlanSynn/onote/releases/tag/v0.4.1
 [0.4.0]: https://github.com/AlanSynn/onote/releases/tag/v0.4.0
 [0.3.0]: https://github.com/AlanSynn/onote/releases/tag/v0.3.0
 [0.2.1]: https://github.com/AlanSynn/onote/releases/tag/v0.2.1

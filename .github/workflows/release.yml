@@ -39,6 +39,9 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
+          - os: ubuntu-latest           # Linux arm64 prebuilt (RPi / arm servers / arm CI runners)
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
@@ -204,42 +207,80 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Download the two assets the taps reference and hash them. The source
-      # archive (Formula) is GitHub's auto-generated tag tarball; the Windows
-      # .zip (Scoop) is a release asset attached by the `release` job above.
-      - name: Hash source archive + Windows zip
+      # Hash the prebuilt release assets the taps install directly: both macOS
+      # (arm64 + x86_64) tarballs for the Homebrew formula, and the Windows .zip
+      # for Scoop. No source archive — every install surface is prebuilt, so the
+      # formula points at these binaries, not a source tarball.
+      - name: Hash prebuilt assets (darwin arm/intel + Windows)
         if: steps.guard.outputs.skip != 'true'
         id: sha
         env:
           TAG: ${{ steps.v.outputs.tag }}
         run: |
-          SRC_URL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz"
+          ARM_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/onote-aarch64-apple-darwin.tar.gz"
+          INTEL_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/onote-x86_64-apple-darwin.tar.gz"
           WIN_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/onote-x86_64-pc-windows-msvc.zip"
-          SRC_SHA=$(curl -fsSL "$SRC_URL" | sha256sum | cut -d' ' -f1)
+          ARM_SHA=$(curl -fsSL "$ARM_URL" | sha256sum | cut -d' ' -f1)
+          INTEL_SHA=$(curl -fsSL "$INTEL_URL" | sha256sum | cut -d' ' -f1)
           WIN_SHA=$(curl -fsSL "$WIN_URL" | sha256sum | cut -d' ' -f1)
-          test -n "$SRC_SHA" || { echo "source archive hash empty"; exit 1; }
-          test -n "$WIN_SHA" || { echo "windows zip hash empty"; exit 1; }
-          echo "src=$SRC_SHA" >> "$GITHUB_OUTPUT"
+          test -n "$ARM_SHA"   || { echo "darwin arm64 tarball hash empty"; exit 1; }
+          test -n "$INTEL_SHA" || { echo "darwin x86_64 tarball hash empty"; exit 1; }
+          test -n "$WIN_SHA"   || { echo "windows zip hash empty"; exit 1; }
+          echo "arm=$ARM_SHA" >> "$GITHUB_OUTPUT"
+          echo "intel=$INTEL_SHA" >> "$GITHUB_OUTPUT"
           echo "win=$WIN_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Bump homebrew-tap (Formula/onote.rb)
         if: steps.guard.outputs.skip != 'true'
         env:
           TAG: ${{ steps.v.outputs.tag }}
-          SRC_SHA: ${{ steps.sha.outputs.src }}
+          VERSION: ${{ steps.v.outputs.version }}
+          ARM_SHA: ${{ steps.sha.outputs.arm }}
+          INTEL_SHA: ${{ steps.sha.outputs.intel }}
         run: |
           git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/AlanSynn/homebrew-tap.git" tap
           cd tap
-          export URL="https://github.com/AlanSynn/onote/archive/refs/tags/${TAG}.tar.gz"
-          python3 - <<PY
-          import re, pathlib, os
-          f = pathlib.Path("Formula/onote.rb")
-          s = f.read_text()
-          s = re.sub(r'url "[^"]+archive/refs/tags/[^"]+\.tar\.gz"',
-                     f'url "{os.environ["URL"]}"', s)
-          s = re.sub(r'sha256 "[0-9a-f]{64}"',
-                     f'sha256 "{os.environ["SRC_SHA"]}"', s)
-          f.write_text(s)
+          export REPO="https://github.com/AlanSynn/onote"
+          # Regenerate the whole formula from a prebuilt-binary template — no
+          # regex on a prior file, so the move from source-build to prebuilt (and
+          # any future structural change) is robust. Installs the darwin binary
+          # directly (`bin.install`); no Rust toolchain, no `cargo install`.
+          python3 - <<'PY'
+          import pathlib, os, textwrap
+          tag, ver = os.environ["TAG"], os.environ["VERSION"]
+          repo = os.environ["REPO"]
+          arm, intel = os.environ["ARM_SHA"], os.environ["INTEL_SHA"]
+          # `{{bin}}` escapes to literal `{bin}` — Ruby interpolation, NOT a
+          # Python placeholder. textwrap.dedent strips the YAML-indent common
+          # prefix so the formula lands at column 0 despite this block's indent.
+          tmpl = f'''\
+          class Onote < Formula
+            desc "Terminal-native, Obsidian-compatible Markdown vault client"
+            homepage "{repo}"
+            version "{ver}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "{repo}/releases/download/{tag}/onote-aarch64-apple-darwin.tar.gz"
+                sha256 "{arm}"
+              end
+              on_intel do
+                url "{repo}/releases/download/{tag}/onote-x86_64-apple-darwin.tar.gz"
+                sha256 "{intel}"
+              end
+            end
+
+            def install
+              bin.install "onote"
+            end
+
+            test do
+              assert_match "onote", shell_output("#{{bin}}/onote --version")
+            end
+          end
+          '''
+          pathlib.Path("Formula/onote.rb").write_text(textwrap.dedent(tmpl))
           PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -247,9 +288,9 @@ jobs:
           if git diff --cached --quiet; then
             echo "homebrew-tap already at ${TAG}; no commit."
           else
-            git commit -m "onote ${TAG#v}: bump source archive + sha256"
+            git commit -m "onote ${TAG#v}: bump prebuilt darwin binaries + sha256"
             git push
-            echo "homebrew-tap bumped to ${TAG}"
+            echo "homebrew-tap bumped to ${TAG} (prebuilt)"
           fi
 
       - name: Bump scoop bucket (bucket/onote.json)
