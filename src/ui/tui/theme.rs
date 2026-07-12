@@ -21,8 +21,8 @@ use ratatui::style::Color;
 /// (e.g. accent → Mauve instead of Lavender) in one place.
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)] // full canonical Catppuccin palette; roles read a subset,
-                   // the rest are kept as the auditable reference + reserved for
-                   // future roles (CLAUDE.md §5 single source of truth).
+                    // the rest are kept as the auditable reference + reserved for
+                    // future roles (CLAUDE.md §5 single source of truth).
 struct Palette {
     rosewater: Color,
     flamingo: Color,

@@ -20,6 +20,7 @@ use super::editor::{
 };
 use super::layout::split_content_row;
 use super::note_drawer::{render_explorer, ActivePane};
+use super::wrap::{caret_row, wrap_all, Row};
 use super::{format_size, ImageOverlay, Mode, PromptKind};
 
 /// Render the §9 small-terminal guard message. App-free signature
@@ -110,9 +111,62 @@ pub(super) fn render(app: &App, state: &mut EditorState, frame: &mut Frame) {
     }
 }
 
+/// Truncate `path` for the path bar so the FILENAME (most identifying segment)
+/// survives a narrow terminal instead of being right-clipped by the widget.
+/// Keeps as many trailing `'/'`-separated segments as fit under `budget` display
+/// cells, prefixed `…/`; a single segment wider than `budget` right-truncates
+/// with a trailing `…`. Char-based (paths are not cursor-mapped, so the
+/// grapheme machinery of `wrap`/selection doesn't apply here); never panics and
+/// degrades to the full path when `budget == 0` (the small-terminal guard owns
+/// the truly-degenerate case).
+fn ellipsize_path(path: &str, budget: usize) -> String {
+    let width = UnicodeWidthStr::width(path);
+    if width <= budget || budget == 0 {
+        return path.to_string();
+    }
+    // Tail-first segments: filename first, then parents.
+    let segments: Vec<&str> = path.rsplit('/').collect();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut len = 1usize; // leading '…'
+    for &seg in &segments {
+        let add = UnicodeWidthStr::width(seg) + if kept.is_empty() { 0 } else { 1 }; // +1 '/'
+        if len + add > budget {
+            break;
+        }
+        len += add;
+        kept.push(seg);
+    }
+    if kept.is_empty() {
+        // Even the last segment overflows: right-truncate it with a trailing '…'.
+        let last = segments[0];
+        let mut take = budget.saturating_sub(1); // room for '…'
+        let mut out: String = String::new();
+        for c in last.chars() {
+            if take == 0 {
+                break;
+            }
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+            if cw > take {
+                break;
+            }
+            take -= cw;
+            out.push(c);
+        }
+        out.push('…');
+        return out;
+    }
+    kept.reverse();
+    format!("…/{}", kept.join("/"))
+}
+
 fn render_path_bar(state: &EditorState, frame: &mut Frame, area: Rect) {
+    // Budget = inner cells minus the two surrounding pad spaces. Ellipsize so a
+    // deep vault path keeps its filename on a narrow terminal instead of being
+    // right-clipped (F1: no clipping of identifying content).
+    let budget = area.width.saturating_sub(2) as usize;
+    let shown = ellipsize_path(&state.path.as_str(), budget);
     let line = Line::from(vec![Span::styled(
-        format!(" {} ", state.path.as_str()),
+        format!(" {shown} "),
         Style::default()
             .fg(state.theme.accent())
             .add_modifier(Modifier::BOLD),
@@ -129,6 +183,7 @@ fn render_editor(app: &App, state: &mut EditorState, frame: &mut Frame, area: Re
     frame.render_widget(block, area);
 
     let height = inner.height as usize;
+    let width = inner.width as usize;
     state.view_height = height;
     // Stash the inner rect so mouse events (which arrive in screen coords) can
     // map back to a buffer cell (P3). Origin + width; height == view_height.
@@ -136,81 +191,125 @@ fn render_editor(app: &App, state: &mut EditorState, frame: &mut Frame, area: Re
     state.editor_y = inner.y;
     state.editor_width = inner.width;
 
-    // Each buffer line is exactly one visual row — NO wrapping — so a logical
-    // line's screen row is exact and the cursor column maps cleanly to a display
-    // column. Image-embed tokens render as an inline `[image: name]` glyph
-    // (§2.4 "editor surface"); the buffer itself is untouched (transparent
-    // editing — the real token is what gets saved). The active selection (if
-    // any) is reconstructed once and rendered as reverse video per line (C4);
-    // `line_idx` is ABSOLUTE (scroll offset + visible index) so selection line
-    // ranges line up with the buffer, not the viewport.
+    // v0.4.0 F1 responsive wrap: recompute the grapheme-aware visual-row layout
+    // at the current width every frame (authoritative). `wrap_all` calls back
+    // for per-line image-glyph spans so wrapping counts each `[image: …]` glyph
+    // at its rendered width, not its token char count. Scroll + mouse + the
+    // caret below all operate in this visual-row space.
+    state.rows = wrap_all(&state.lines, width, |_, line| glyph_spans(app, line));
+    // One-shot: a terminal resize reshaped the rows — clamp the caret back into
+    // view once, then clear the flag so ordinary reading can still scroll away
+    // from the cursor (adjust_scroll otherwise runs only on edits).
+    if state.resize_pending {
+        state.adjust_scroll(height);
+        state.resize_pending = false;
+    }
+
+    // Render the visible visual rows (NOT logical lines): each row is one screen
+    // line carrying a `[char_start, char_end)` slice of its source line. The
+    // active selection is reconstructed once and projected per row (C4).
     let selection = state.selection();
-    let width = inner.width as usize;
+    let glyph_color = state.theme.glyph();
+    let lines = &state.lines;
     let visible: Vec<Line> = state
-        .lines
+        .rows
         .iter()
         .skip(state.scroll)
         .take(height)
-        .enumerate()
-        .map(|(i, l)| {
-            render_line(
-                app,
-                l,
-                state.scroll + i,
-                selection,
-                width,
-                state.theme.glyph(),
-            )
+        .map(|row| {
+            // A row's source line is always present (rows are derived from
+            // `lines`); fall back to "" defensively so a stale row can't panic.
+            let line = lines.get(row.line_idx).map(|s| s.as_str()).unwrap_or("");
+            render_wrapped_row(app, line, row, selection, width, glyph_color)
         })
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, inner);
 
-    // Place the terminal cursor on the current char's DISPLAY column. `cx` is a
-    // char index into the buffer line; we translate it through glyph
-    // substitution + unicode display width so wide chars (CJK/emoji = 2 cols)
-    // and image glyphs land in the right column. Only positioned when the
-    // cursor's row is inside the viewport — a reader can mouse-scroll away from
-    // it (§2.4/§9) and the cursor must not be drawn on a stale row.
-    if state.mode == Mode::Edit && state.cy >= state.scroll && state.cy < state.scroll + height {
-        let line = state.cur_line();
-        let col = cursor_display_col(app, line, state.cx);
-        let x = inner.x + col.min(inner.width as usize) as u16;
-        let y = inner.y + (state.cy - state.scroll) as u16;
-        frame.set_cursor_position((x, y));
+    // Place the terminal cursor on the caret's visual row + display column. The
+    // caret's row is its position in the flattened `rows` list; its column is
+    // the display width from the row's start to `cx` (glyph + unicode aware).
+    // Only positioned when that row is on-screen — a reader can mouse-scroll
+    // away from the caret (§2.4/§9) and it must not be drawn on a stale row.
+    if state.mode == Mode::Edit {
+        if let Some((vi, row)) = caret_row(&state.rows, state.cy, state.cx) {
+            if vi >= state.scroll && vi < state.scroll + height {
+                let line = state.cur_line();
+                let spans = glyph_spans(app, line);
+                let row_start_col = display_col_from_spans(line, &spans, row.char_start);
+                let cx_clamped = state.cx.min(char_count(line));
+                let caret_col = display_col_from_spans(line, &spans, cx_clamped);
+                let col = caret_col.saturating_sub(row_start_col).min(width);
+                let x = inner.x + col as u16;
+                let y = inner.y + (vi - state.scroll) as u16;
+                frame.set_cursor_position((x, y));
+            }
+        }
     }
     height
 }
 
-fn render_status(state: &EditorState, frame: &mut Frame, area: Rect) {
-    // Honest keymap: `Enter` both inserts a newline (normal lines) and opens
-    // the image preview (image-embed lines), so advertise its dual role rather
-    // than the misleading "Enter=image". Esc is intentionally NOT a quit key
-    // (see `handle_edit_event`), so it's omitted. `^K` shows contextually in
-    // the CONFLICT status label. Wheel scroll is implied for a terminal mouse.
-    //
-    // When a selection is active, swap in a compact selection hint so the
-    // copy/cut/replace keys are discoverable exactly when they matter (the
-    // full hint is too long for narrow terminals; the contextual swap is the
-    // width-aware compromise). Ctrl+C stays "quit", so copy is ^Shift+C.
-    let hint = if state.active_pane == ActivePane::Explorer {
-        " explorer: n new · N folder · r rename · d delete · ←/→ fold · Enter open · Esc editor"
+/// Width-aware keymap hint for the status bar. Two tiers per mode: a full hint
+/// (every relevant key, named) and a compact one (keys only). The full hint wins
+/// when it fits the post-label budget; otherwise the compact hint; otherwise an
+/// empty hint (the status label + message still render). So a narrow terminal
+/// never right-clips the keymap into nonsense — it steps down to something that
+/// fits or shows nothing, never a half-word.
+fn status_hint(state: &EditorState, budget: usize) -> &'static str {
+    // Honest keymap: `Enter` both inserts a newline and opens the image preview
+    // (image-embed lines), so advertise its dual role, not "Enter=image". Esc is
+    // NOT a quit key (see `handle_edit_event`), omitted. `^K` shows in CONFLICT.
+    // Ctrl+C stays "quit", so copy is ^Shift+C.
+    let (full, short): (&'static str, &'static str) = if state.active_pane == ActivePane::Explorer {
+        (
+            " explorer: n new · N folder · r rename · d delete · ←/→ fold · Enter open · Esc editor",
+            " explorer: n · N · r · d · Enter · Esc ",
+        )
     } else if state.selection().is_some() {
-        " selection: ^Shift+C copy · ^X cut · type=replace · Esc clear"
+        (
+            " selection: ^Shift+C copy · ^X cut · type=replace · Esc clear",
+            " sel: ^Shift+C · ^X · Esc ",
+        )
     } else {
-        " ^S save · ^O open · ^P paste · ^D del-img · ^R reload · Enter newline/image · ^Q quit"
+        (
+            " ^S save · ^O open · ^P paste · ^D del-img · ^R reload · Enter newline/image · ^Q quit",
+            " ^S · ^O · ^P · ^D · ^R · ^Q ",
+        )
     };
+    pick_hint(full, short, budget)
+}
+
+/// Pure width-tier pick: the full hint if it fits `budget` display cells, else
+/// the short hint if it fits, else `""`. Extracted from `status_hint` so the
+/// step-down is unit-testable without constructing an `EditorState`.
+fn pick_hint<'a>(full: &'a str, short: &'a str, budget: usize) -> &'a str {
+    if UnicodeWidthStr::width(full) <= budget {
+        full
+    } else if UnicodeWidthStr::width(short) <= budget {
+        short
+    } else {
+        ""
+    }
+}
+
+fn render_status(state: &EditorState, frame: &mut Frame, area: Rect) {
+    // The label + message bookend the hint; the hint gets whatever cells remain.
+    // Measured by display width so a future symbol-bearing hint still budgets right.
+    let label = format!(" {} ", state.status.label());
+    let message = match &state.message {
+        Some((_, m)) => format!("   {m}"),
+        None => String::new(),
+    };
+    let label_w = UnicodeWidthStr::width(label.as_str());
+    let msg_w = UnicodeWidthStr::width(message.as_str());
+    let budget = (area.width as usize)
+        .saturating_sub(label_w)
+        .saturating_sub(msg_w);
+    let hint = status_hint(state, budget);
     let line = Line::from(vec![
-        Span::styled(
-            format!(" {} ", state.status.label()),
-            Style::default().fg(state.status.color(&state.theme)),
-        ),
+        Span::styled(label, Style::default().fg(state.status.color(&state.theme))),
         Span::styled(hint.to_string(), Style::default().fg(state.theme.muted())),
-        Span::raw(if let Some((_, m)) = &state.message {
-            format!("   {m}")
-        } else {
-            String::new()
-        }),
+        Span::raw(message),
     ]);
     let para = Paragraph::new(line)
         .style(Style::default().bg(state.theme.bar_bg()))
@@ -423,7 +522,7 @@ fn glyph_for(name: &str) -> String {
 /// configured one, so Obsidian `![[…]]` embeds are found regardless of config.
 /// Each reference's token is located at ALL of its non-overlapping occurrences,
 /// so a line embedding the same image twice gets two glyphs.
-fn glyph_spans(app: &App, line: &str) -> Vec<(usize, usize, String)> {
+pub(super) fn glyph_spans(app: &App, line: &str) -> Vec<(usize, usize, String)> {
     let mut spans: Vec<(usize, usize, String)> = Vec::new();
     for rf in app.attachment_links(line) {
         let token =
@@ -448,23 +547,56 @@ fn glyph_spans(app: &App, line: &str) -> Vec<(usize, usize, String)> {
     spans
 }
 
-/// Render a buffer line with image tokens shown as inline `[image: name]` glyphs,
-/// and the active selection in reverse video (C4). `line_idx` is the ABSOLUTE
-/// line index (so `line_selection` can compare against selection line ranges);
-/// `selection` is the reconstructed editor selection; `width` is the viewport
-/// width (a blank line inside a multiline selection renders a full-width
-/// highlight bar — C4).
-fn render_line(
+/// Render one visual row of a wrapped line (v0.4.0 F1). The row covers source
+/// chars `[row.char_start, row.char_end)`; we slice that substring, remap the
+/// line's image-glyph spans into it, intersect the active selection down to the
+/// row, and reuse the tested [`render_line_from_spans`] reverse-video core.
+/// `width` is the viewport width (a selected BLANK row still renders a full-
+/// width highlight bar — C4).
+fn render_wrapped_row(
     app: &App,
     line: &str,
-    line_idx: usize,
+    row: &Row,
     selection: Option<Selection>,
     width: usize,
     glyph_color: Color,
 ) -> Line<'static> {
-    let spans = glyph_spans(app, line);
-    let ls = line_selection(line_idx, char_count(line), selection);
-    render_line_from_spans(line, &spans, ls, width, glyph_color)
+    let byte_a = char_to_byte(line, row.char_start);
+    let byte_b = char_to_byte(line, row.char_end);
+    let sub = &line[byte_a..byte_b];
+    // Glyphs are atomic under wrap, so every glyph span sits entirely inside or
+    // outside the row's char range; keep the inside ones, shifted to sub offsets.
+    let sub_spans: Vec<(usize, usize, String)> = glyph_spans(app, line)
+        .iter()
+        .filter(|(s, e, _)| *s >= byte_a && *e <= byte_b)
+        .map(|(s, e, g)| (*s - byte_a, *e - byte_a, g.clone()))
+        .collect();
+    let ls = line_selection_local(row, char_count(line), selection);
+    render_line_from_spans(sub, &sub_spans, ls, width, glyph_color)
+}
+
+/// Project a selection onto a single VISUAL row (a `[char_start, char_end)`
+/// slice of `line_idx`). Reuses the line-level [`line_selection`] then
+/// intersects with the row: a row fully inside the selection → `Full` (so a
+/// blank wrapped row still gets the full-width bar); partially inside → a
+/// row-local `Range`; outside → `None`.
+fn line_selection_local(row: &Row, line_len: usize, selection: Option<Selection>) -> LineSel {
+    match line_selection(row.line_idx, line_len, selection) {
+        LineSel::None => LineSel::None,
+        // Whole source line selected → every row of it is fully selected.
+        LineSel::Full => LineSel::Full,
+        LineSel::Range(x, y) => {
+            let lo = x.max(row.char_start);
+            let hi = y.min(row.char_end);
+            if lo >= hi {
+                LineSel::None
+            } else if lo == row.char_start && hi == row.char_end {
+                LineSel::Full
+            } else {
+                LineSel::Range(lo - row.char_start, hi - row.char_start)
+            }
+        }
+    }
 }
 
 /// Kind of a render segment: a raw text slice from the buffer, or a substituted
@@ -607,13 +739,12 @@ fn render_line_from_spans(
 /// unicode display width AND glyph substitution. When the cursor sits inside a
 /// token (only reachable by arrowing into a glyph mid-token), it snaps to that
 /// glyph's right edge — where it lands after the next keystroke anyway.
-fn cursor_display_col(app: &App, line: &str, cx: usize) -> usize {
-    display_col_from_spans(line, &glyph_spans(app, line), cx)
-}
-
-/// Pure core of [`cursor_display_col`]: the display column of char `cx` given
-/// precomputed glyph spans. Separated from `app` so it is unit-testable.
-fn display_col_from_spans(line: &str, spans: &[(usize, usize, String)], cx: usize) -> usize {
+/// Separated from `app` so the pure width math is unit-testable.
+pub(super) fn display_col_from_spans(
+    line: &str,
+    spans: &[(usize, usize, String)],
+    cx: usize,
+) -> usize {
     let byte_cx = char_to_byte(line, cx.min(char_count(line)));
     let mut col = 0usize;
     let mut cur = 0usize;
@@ -705,13 +836,16 @@ fn char_at_display(text: &str, col0: usize, display_col: usize) -> Option<usize>
     None
 }
 
-/// Inverse of [`cursor_display_col`] for mouse hits: the char index at display
-/// column `display_col` on `line`, grapheme-snapped (C7) so a click lands on a
-/// grapheme boundary (a click on the right half of a ZWJ emoji still anchors at
-/// its start).
-pub(super) fn display_col_to_char(app: &App, line: &str, display_col: usize) -> usize {
+/// Mouse hit → source char for a visual row (v0.4.0 F1). `dx` is the display
+/// column offset WITHIN the row (from the row's left edge); `char_start` is the
+/// row's first source char. The row's left edge sits at the display width of
+/// `[0, char_start)` on the whole line, so the global display column is
+/// `row_start_col + dx`; invert that (C2) and grapheme-snap (C7) so a click
+/// lands on a grapheme boundary. Atomic glyphs return their token's start char.
+pub(super) fn char_at_row(app: &App, line: &str, char_start: usize, dx: usize) -> usize {
     let spans = glyph_spans(app, line);
-    let c = display_col_to_char_from_spans(line, &spans, display_col);
+    let row_start_col = display_col_from_spans(line, &spans, char_start);
+    let c = display_col_to_char_from_spans(line, &spans, row_start_col + dx);
     snap_to_grapheme_start(line, c)
 }
 
@@ -1032,5 +1166,61 @@ mod tests {
         );
         // Col 1 is past the single visible cell → clamp to char_count (2).
         assert_eq!(display_col_to_char_from_spans(line, &[], 1), 2);
+    }
+
+    // ── F1 narrow-terminal path/status polish ───────────────────────────────
+
+    /// `ellipsize_path` keeps the filename when the full path overflows: trailing
+    /// segments survive under a `…/` prefix; a path that already fits is returned
+    /// untouched.
+    #[test]
+    fn ellipsize_path_keeps_filename_when_narrow() {
+        // Fits → unchanged.
+        assert_eq!(ellipsize_path("Notes/Foo.md", 80), "Notes/Foo.md");
+        // Overflow → keep tail segments that fit, drop leading parents.
+        let s = ellipsize_path("Vault/Notes/Sub/Foo.md", 12);
+        assert!(s.ends_with("Foo.md"), "filename must survive: {s:?}");
+        assert!(s.starts_with('…'), "leading ellipsis when truncated: {s:?}");
+        // Never exceeds the budget.
+        assert!(
+            UnicodeWidthStr::width(s.as_str()) <= 12,
+            "must fit budget: {s:?}"
+        );
+    }
+
+    /// A single segment wider than the budget right-truncates with a trailing
+    /// `…` (no slash to break on).
+    #[test]
+    fn ellipsize_path_long_filename_truncates_with_tail() {
+        let s = ellipsize_path("VeryLongFilename.md", 8);
+        assert!(
+            s.ends_with('…'),
+            "tail ellipsis on a long single segment: {s:?}"
+        );
+        assert!(
+            UnicodeWidthStr::width(s.as_str()) <= 8,
+            "must fit budget: {s:?}"
+        );
+    }
+
+    /// `budget == 0` (degenerate viewport) returns the full path rather than
+    /// panicking — the §9 small-terminal guard owns the truly-tiny case.
+    #[test]
+    fn ellipsize_path_zero_budget_returns_full() {
+        assert_eq!(ellipsize_path("a/b.md", 0), "a/b.md");
+    }
+
+    /// `pick_hint` steps full → short → empty as the budget shrinks, so a narrow
+    /// status bar never right-clips a hint into a half-word.
+    #[test]
+    fn pick_hint_steps_down_by_budget() {
+        let full = "^S save · ^O open · ^Q quit";
+        let short = "^S · ^Q";
+        // Wide → full.
+        assert_eq!(pick_hint(full, short, 80), full);
+        // Tight → short.
+        assert_eq!(pick_hint(full, short, 10), short);
+        // Too narrow even for short → empty (label still shows).
+        assert_eq!(pick_hint(full, short, 2), "");
     }
 }

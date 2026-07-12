@@ -79,11 +79,13 @@ mod layout;
 mod note_drawer;
 mod render;
 mod theme;
+mod wrap;
 use editor::*;
 use keymap::*;
 use layout::explorer_effective_visibility;
 use note_drawer::ActivePane;
 use render::*;
+use wrap::wrap_all;
 
 type Terminal = RatatuiTerminal<CrosstermBackend<Stdout>>;
 
@@ -335,6 +337,12 @@ fn main_loop(
                 // Spike 2 mouse scroll: nudge the viewport without moving the
                 // cursor (reader-style). Captured via EnableMouseCapture in run().
                 Event::Mouse(mouse) => handle_mouse(app, state, mouse),
+                // v0.4.0 F1: a resize reshapes the wrap layout. Flag it so the
+                // next render recomputes rows (at the new width) and one-shot
+                // clamps the caret back into view — ordinary reading can still
+                // scroll away from the cursor (the clamp fires once, not every
+                // frame).
+                Event::Resize(_, _) => state.resize_pending = true,
                 _ => {}
             }
         }
@@ -478,8 +486,22 @@ fn handle_edit_mode(app: &App, state: &mut EditorState, key: KeyEvent) -> Result
 /// Dispatch an editor action, then re-anchor the viewport on the cursor.
 fn dispatch_and_scroll(app: &App, state: &mut EditorState, action: Action) -> Result<Control> {
     let ctrl = dispatch_edit(app, state, action)?;
+    // v0.4.0 F1: a buffer change can reshape the row layout (a wrap-inducing
+    // edit moves the caret's visual row), so re-wrap at the current width BEFORE
+    // the scroll clamp — otherwise `adjust_scroll` would reason about stale rows
+    // and could leave the caret one row off-screen until the next edit.
+    recompute_rows(app, state);
     state.adjust_scroll(state.view_height);
     Ok(ctrl)
+}
+
+/// Recompute the visual-row layout at the last-known editor width (v0.4.0 F1).
+/// Cheap + pure (delegates to `wrap::wrap_all`); the App callback supplies the
+/// per-line image-glyph spans so glyphs count their rendered width. Centralized
+/// so render + the post-edit scroll math share one wrapping pass.
+fn recompute_rows(app: &App, state: &mut EditorState) {
+    let width = state.editor_width as usize;
+    state.rows = wrap_all(&state.lines, width, |_, line| glyph_spans(app, line));
 }
 
 /// Cycle Explorer visibility + focus (Ctrl+E). From the editor, show + focus
@@ -1045,19 +1067,26 @@ fn handle_mouse(app: &App, state: &mut EditorState, mouse: MouseEvent) {
     // The char-column resolver is the ONLY App dependency in the mouse path
     // (glyph substitution). Injecting it lets `handle_mouse_with` (the whole
     // Down/Drag/Up state machine) be unit-tested App-free with a plain resolver.
-    handle_mouse_with(state, mouse, |line, d| display_col_to_char(app, line, d));
+    handle_mouse_with(state, mouse, |line, char_start, dx| {
+        char_at_row(app, line, char_start, dx)
+    });
 }
 
 /// App-free core of [`handle_mouse`] (testable): same Down/Drag/Up selection
-/// state machine, but resolves a hit column via `char_at` instead of `App`.
+/// state machine, but resolves a hit column via `char_at` instead of `App`. The
+/// resolver takes `(line, row_char_start, dx)` → source char (v0.4.0 F1: hits
+/// are within a wrapped visual row, so the offset is relative to the row, and
+/// the row's char start is needed to place it on the source line).
 fn handle_mouse_with<R>(state: &mut EditorState, mouse: MouseEvent, char_at: R)
 where
-    R: Fn(&str, usize) -> usize,
+    R: Fn(&str, usize, usize) -> usize,
 {
+    let total_rows = state.rows.len();
     match mouse.kind {
         MouseEventKind::ScrollUp => state.scroll = state.scroll.saturating_sub(3),
         MouseEventKind::ScrollDown => {
-            let max = state.lines.len().saturating_sub(state.view_height.max(1));
+            // v0.4.0 F1: scroll is measured in visual rows, not logical lines.
+            let max = total_rows.saturating_sub(state.view_height.max(1));
             state.scroll = (state.scroll + 3).min(max);
         }
         MouseEventKind::Down(MouseButton::Left) => {
@@ -1086,25 +1115,32 @@ where
 }
 
 /// Map a screen (column, row) to a buffer [`Pos`], or `None` if it's outside
-/// the editor inner rect. The hit column becomes a char index via `char_at`
-/// (the inverse display-col map, C2, grapheme-snapped C7). Row → absolute line
-/// via the scroll offset, clamped to the last line (a hit below the viewport
-/// pins to the last line while autoscroll catches up).
+/// the editor inner rect. The screen row → visual row (scroll + dy) → source
+/// line via the `rows` layout; the hit column becomes a char index via `char_at`
+/// (the inverse display-col map within the row, C2, grapheme-snapped C7). A hit
+/// below the last visual row pins to the last row's line (autoscroll catches
+/// up). Returns `None` when there is no row layout yet (before the first
+/// render) — the first click then no-ops until a frame is drawn.
 fn mouse_to_pos_with<R>(state: &EditorState, col: u16, row: u16, char_at: &R) -> Option<Pos>
 where
-    R: Fn(&str, usize) -> usize,
+    R: Fn(&str, usize, usize) -> usize,
 {
     if col < state.editor_x || row < state.editor_y {
         return None;
     }
     let dx = (col - state.editor_x) as usize;
     let dy = (row - state.editor_y) as usize;
-    let last = state.lines.len().saturating_sub(1);
-    let line_idx = state.scroll.saturating_add(dy).min(last);
-    let line = state.lines.get(line_idx)?;
-    let char_col = char_at(line, dx.min(state.editor_width as usize));
+    let last = state.rows.len().saturating_sub(1);
+    let vi = state.scroll.saturating_add(dy).min(last);
+    let r = state.rows.get(vi)?;
+    let line = state.lines.get(r.line_idx)?;
+    let char_col = char_at(
+        line.as_str(),
+        r.char_start,
+        dx.min(state.editor_width as usize),
+    );
     Some(Pos {
-        line: line_idx,
+        line: r.line_idx,
         col: char_col,
     })
 }
@@ -1114,10 +1150,11 @@ where
 /// on Down is untouched, so the selection tracks the pointer from the anchor.
 fn mouse_drag_to_with<R>(state: &mut EditorState, col: u16, row: u16, char_at: &R)
 where
-    R: Fn(&str, usize) -> usize,
+    R: Fn(&str, usize, usize) -> usize,
 {
+    let total_rows = state.rows.len();
     let bottom = state.editor_y.saturating_add(state.view_height as u16);
-    if row >= bottom && state.scroll + state.view_height < state.lines.len() {
+    if row >= bottom && state.scroll + state.view_height < total_rows {
         state.scroll += 1; // drag below the viewport → scroll down (C3)
     } else if row < state.editor_y && state.scroll > 0 {
         state.scroll -= 1; // drag above the viewport → scroll up (C3)
@@ -1439,20 +1476,26 @@ mod tests {
     // (no glyphs → empty spans; grapheme snap is identity on ASCII) so the
     // full Down→Drag→Up state machine is covered without building an `App`.
 
-    /// A resolver equivalent to the real one for plain text: inverse map (no
-    /// glyphs) + grapheme snap.
-    fn plain_resolver(line: &str, display_col: usize) -> usize {
-        let c = display_col_to_char_from_spans(line, &[], display_col);
+    /// A resolver equivalent to the real one for plain text (no glyphs): the
+    /// row's left edge sits at the display width of `[0, char_start)`, so the
+    /// hit's global display col is `row_start + dx`; invert + grapheme-snap.
+    fn plain_resolver(line: &str, char_start: usize, dx: usize) -> usize {
+        let row_start = display_col_from_spans(line, &[], char_start);
+        let c = display_col_to_char_from_spans(line, &[], row_start + dx);
         snap_to_grapheme_start(line, c)
     }
 
-    /// Editor state for `body` with a fake inner rect at (x,y) of `w`×`h`.
+    /// Editor state for `body` with a fake inner rect at (x,y) of `w`×`h`, and a
+    /// plain-text (no-glyph) wrap layout at width `w` so mouse hits map through
+    /// visual rows (v0.4.0 F1). Test fixtures are glyph-free, so plain wrap
+    /// matches the glyph-aware wrap exactly.
     fn mouse_state(body: &str, x: u16, y: u16, w: u16, h: usize) -> EditorState {
         let mut s = state_from_body(body);
         s.editor_x = x;
         s.editor_y = y;
         s.editor_width = w;
         s.view_height = h;
+        s.rows = wrap_all(&s.lines, w as usize, |_, _| Vec::new());
         s
     }
 

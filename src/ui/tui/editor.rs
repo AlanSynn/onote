@@ -14,6 +14,7 @@ use crate::domain::note::NoteDocument;
 use crate::domain::vault::RelativeNotePath;
 
 use super::keymap::{Action, KeymapRegistry};
+use super::wrap;
 use super::{ImageOverlay, Mode, PromptKind, SyncStatus};
 
 /// The editor's in-memory buffer + cursor/selection state. Constructed inside
@@ -95,6 +96,17 @@ pub(super) struct EditorState {
     /// `theme` string; defaults to Latte here until `run` overrides it. Cheap
     /// to copy (all `Color`); renderers read role colors off it.
     pub(super) theme: super::theme::Theme,
+    /// Visual-row layout (v0.4.0 F1 wrap): the flattened, grapheme-aware
+    /// soft-wrap of `lines` at the last-known editor width. Recomputed every
+    /// render (authoritative) and after each edit (so post-edit scroll math
+    /// sees fresh wrapping). Empty until the first render. Mouse hits + scroll
+    /// are measured in this visual-row space, NOT logical lines.
+    pub(super) rows: Vec<wrap::Row>,
+    /// Set on `Event::Resize`; consumed by the next render to clamp the cursor
+    /// back into view after the width change reshapes the row layout. Keeps the
+    /// "reader can scroll away from the cursor" property (adjust_scroll runs
+    /// only on edits + this one-shot resize clamp, never every frame).
+    pub(super) resize_pending: bool,
 }
 
 impl EditorState {
@@ -139,6 +151,8 @@ impl EditorState {
             prompt_input: String::new(),
             note_history: Vec::new(),
             theme: super::theme::Theme::default(),
+            rows: Vec::new(),
+            resize_pending: false,
         }
     }
 
@@ -297,14 +311,26 @@ impl EditorState {
         }
     }
 
+    /// Keep the caret's VISUAL row inside the viewport (v0.4.0 F1: scroll is
+    /// measured in visual rows, not logical lines — a wrapped line occupies
+    /// several scrollable rows). Reads the last-computed `rows` layout; falls
+    /// back to line-based clamping when `rows` is empty (before the first
+    /// render) so the caret is still kept in view on the very first keystrokes.
+    /// View-height 0 is a degenerate/hidden viewport → no-op.
     pub(super) fn adjust_scroll(&mut self, view_height: usize) {
         if view_height == 0 {
             return;
         }
-        if self.cy < self.scroll {
+        if let Some((vi, _)) = wrap::caret_row(&self.rows, self.cy, self.cx) {
+            if vi < self.scroll {
+                self.scroll = vi;
+            }
+            if vi >= self.scroll + view_height {
+                self.scroll = vi + 1 - view_height;
+            }
+        } else if self.cy < self.scroll {
             self.scroll = self.cy;
-        }
-        if self.cy >= self.scroll + view_height {
+        } else if self.cy >= self.scroll + view_height {
             self.scroll = self.cy + 1 - view_height;
         }
     }
