@@ -62,8 +62,17 @@ jobs:
           cache: npm
           cache-dependency-path: site/package-lock.json
 
-      - name: Install pandoc
-        run: sudo apt-get update && sudo apt-get install -y pandoc
+      # Pandoc is pinned to 3.10 (official prebuilt tarball) rather than apt's
+      # older Ubuntu-noble build: pandoc <3.x emits typst markup that typst
+      # 0.15 rejects ("expected colon"), breaking the PDF. 3.10 + typst 0.15 is
+      # the verified-local pair, so we mirror it exactly here.
+      - name: Install pandoc 3.10 (pinned prebuilt)
+        run: |
+          set -eu
+          curl -fsSL "https://github.com/jgm/pandoc/releases/download/3.10/pandoc-3.10-linux-amd64.tar.gz" -o /tmp/pandoc.tgz
+          tar -xzf /tmp/pandoc.tgz -C /tmp
+          sudo install -m 0755 /tmp/pandoc-3.10/bin/pandoc /usr/local/bin/pandoc
+          pandoc --version | head -1
 
       - name: Install typst (prebuilt musl static binary)
         run: |
