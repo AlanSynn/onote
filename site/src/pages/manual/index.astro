@@ -2,7 +2,7 @@
 import LandingLayout from '../../layouts/LandingLayout.astro';
 import ManualDownload from '../../components/ManualDownload.astro';
 import { manualGroups } from '../../lib/nav';
-const base = import.meta.env.BASE_URL;
+const base = import.meta.env.BASE_URL.endsWith("/") ? import.meta.env.BASE_URL : import.meta.env.BASE_URL + "/";
 const groups = await manualGroups();
 const count = groups.reduce((n, g) => n + g.entries.length, 0);
 ---

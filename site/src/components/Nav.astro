@@ -3,7 +3,7 @@ import ThemeToggle from './ThemeToggle.astro';
 // Top bar. `import.meta.env.BASE_URL` is '/onote/' (Astro base + trailing slash),
 // so internal links are built off it rather than root-absolute '/' (which Astro
 // does NOT reliably prefix with base → 404 under the subpath).
-const base = import.meta.env.BASE_URL;
+const base = import.meta.env.BASE_URL.endsWith("/") ? import.meta.env.BASE_URL : import.meta.env.BASE_URL + "/";
 const repo = 'https://github.com/AlanSynn/onote';
 ---
 

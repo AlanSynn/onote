@@ -3,7 +3,7 @@ import LandingLayout from '../layouts/LandingLayout.astro';
 import TerminalPane from '../components/TerminalPane.astro';
 import FeatureCard from '../components/FeatureCard.astro';
 import CopyButton from '../components/CopyButton.astro';
-const base = import.meta.env.BASE_URL;
+const base = import.meta.env.BASE_URL.endsWith("/") ? import.meta.env.BASE_URL : import.meta.env.BASE_URL + "/";
 const m = (slug: string) => `${base}manual/${slug}`;
 ---
 
@@ -119,10 +119,22 @@ quick ideas, always one keystroke away.
         description="Latte, Frappé, Macchiato, Mocha. Case-insensitive, unpainted large surfaces, semantic roles."
       />
       <FeatureCard
-        glyph="↹"
-        title="Responsive wrap"
-        href={m('editor')}
-        description="Grapheme-aware reflow on resize — editor and drawers stay readable on narrow terminals."
+        glyph="◆"
+        title="Daily notes"
+        href={m('commands')}
+        description="Open or create today's note with onote today. Date-stamped under a configurable daily_dir."
+      />
+      <FeatureCard
+        glyph="↗"
+        title="Obsidian handoff"
+        href={m('commands')}
+        description="Hand the current note to Obsidian desktop with onote gui via the obsidian:// URI scheme."
+      />
+      <FeatureCard
+        glyph="⌨"
+        title="Custom keymap"
+        href={m('keymap')}
+        description="Rebind any action in [keymap]. Case-insensitive specs, skip-on-malformed, full action vocabulary."
       />
     </div>
   </section>
