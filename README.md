@@ -262,6 +262,7 @@ open_gui_command  = "obsidian://open?vault={vault}&file={file}"
 backup_remote     = "origin"
 share_port        = 7478
 share_allow_lan   = false                                         # loopback by default; opt into LAN
+theme             = "latte"                                      # latte | frappe | macchiato | mocha
 
 # [layout] drives the responsive Explorer drawer: it auto-shows at/above
 # `show_explorer_threshold` cols, and Ctrl+E toggles it at any width.
@@ -288,6 +289,7 @@ explorer_hidden_width   = 4       # reserved (future toggle-gutter width)
 | `backup_remote`     | Git remote used by `onote backup`                                        |
 | `share_port`        | Port the read-only share server listens on                               |
 | `share_allow_lan`   | `false` = loopback only; `true` = bind LAN                               |
+| `theme`             | Catppuccin flavor: `latte` (light, default) \| `frappe` / `macchiato` / `mocha` (dark) |
 | `keymap`            | `[keymap]` table of `"key-spec" = "action"` overrides (see below)        |
 | `layout`            | `[layout]` table of responsive-Explorer knobs (see below)                |
 
@@ -443,10 +445,22 @@ These are load-bearing promises, not aspirations:
 
 ## Theming
 
-onote deliberately **does not impose a color theme**. It inherits your terminal's
-palette, so whatever color remapping your terminal does (truecolor, base16,
-gruvbox, catppuccin, …) applies transparently. There is no in-app theme engine —
-by design.
+onote's color system is [Catppuccin](https://catppuccin.com/palette/) — the four
+canonical flavors as exact `Color::Rgb` palettes (v0.3 hexes), exposed through
+semantic roles (accent, border, link, glyph, success, warning, error, info,
+selection …) so renderers never touch raw palette slots. The default is
+**Latte (light)**; the dark flavors **Frappé**, **Macchiato**, and **Mocha** are
+selectable in `config.toml`:
+
+```toml
+theme = "latte"   # latte (light, default) | frappe | macchiato | mocha (dark)
+```
+
+The value is case-insensitive, and an unknown value falls back to **Latte**
+rather than erroring — a theme typo never blocks startup. Large surfaces (the
+editor body) are left unpainted so your terminal's background shows through; only
+the bars (path / status) and accents are themed, which keeps the app cohesive in
+both light and dark terminals without fighting your terminal's palette.
 
 ## Development
 
@@ -465,7 +479,7 @@ brew install just     # or: cargo install just
 | `just release`| Release build                                         |
 | `just run`    | Build + run the TUI                                   |
 
-State: **100+ tests**, clippy `-D warnings` clean.
+State: **270+ tests**, clippy `-D warnings` clean.
 
 ## Status & non-goals
 
