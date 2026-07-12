@@ -78,6 +78,7 @@ mod keymap;
 mod layout;
 mod note_drawer;
 mod render;
+mod theme;
 use editor::*;
 use keymap::*;
 use layout::explorer_effective_visibility;
@@ -116,12 +117,12 @@ impl SyncStatus {
         }
     }
 
-    fn color(&self) -> Color {
+    fn color(&self, theme: &theme::Theme) -> Color {
         match self {
-            Self::Clean => Color::Green,
-            Self::Dirty => Color::Yellow,
-            Self::Saving => Color::Cyan,
-            Self::Conflict | Self::ChangedExternally | Self::Error(_) => Color::Red,
+            Self::Clean => theme.success(),
+            Self::Dirty => theme.warning(),
+            Self::Saving => theme.info(),
+            Self::Conflict | Self::ChangedExternally | Self::Error(_) => theme.error(),
         }
     }
 }
@@ -288,6 +289,9 @@ pub fn run(app: &App, initial: NoteDocument) -> Result<()> {
     let mut state = EditorState::from_doc(initial);
     // Overlay user `[keymap]` overrides on the baked defaults (§5 KeymapRegistry).
     state.keymap = KeymapRegistry::from_config(&app.config().keymap);
+    // Resolve the Catppuccin theme once (v0.4.0): Latte default, selectable via
+    // `theme = "..."`. Stored on the state the renderers already read.
+    state.theme = theme::Theme::from_config_str(&app.config().theme);
     // Detect a graphics protocol (Kitty/iTerm2/Sixel) for the image modal.
     // `from_query_stdio` probes the terminal; `None` ⇒ text fallback (§2.4).
     // Must run after entering the alternate screen so the probe sequences land
@@ -1417,8 +1421,11 @@ mod tests {
     /// it cannot be confused with `Dirty` (Yellow) or `Clean` (Green).
     #[test]
     fn sync_status_saving_variant_is_distinct() {
+        let theme = theme::Theme::default();
         assert_eq!(SyncStatus::Saving.label(), "saving…");
-        assert_eq!(SyncStatus::Saving.color(), Color::Cyan);
+        // Saving uses the theme's info color (Catppuccin Sky), distinct from the
+        // success/warning/error roles used by the other variants.
+        assert_eq!(SyncStatus::Saving.color(&theme), theme.info());
         // All five sibling variants present (§5 model is complete).
         assert_ne!(SyncStatus::Saving, SyncStatus::Clean);
         assert_ne!(SyncStatus::Saving, SyncStatus::Dirty);

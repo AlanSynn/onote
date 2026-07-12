@@ -199,6 +199,7 @@ fn build_app_with_clipboard(dir: &std::path::Path, clipboard: Arc<dyn Clipboard>
         share_allow_lan: false,
         keymap: Default::default(),
         layout: Default::default(),
+        theme: "latte".into(),
     };
     let index_db = dir.join(".onote").join("index.sqlite");
     std::fs::create_dir_all(dir.join(".onote")).unwrap();

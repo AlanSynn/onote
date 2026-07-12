@@ -18,11 +18,12 @@
 use std::collections::HashSet;
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState};
 use ratatui::Frame;
 
+use super::theme::Theme;
 use crate::domain::vault::{EntryKind, VaultEntry};
 
 /// Which pane receives pane-specific keys (`CLAUDE.md` §3.2; basalt `ActivePane`).
@@ -241,6 +242,7 @@ pub(super) fn render_explorer(
     area: Rect,
     active: bool,
     current_rel: Option<&str>,
+    theme: &Theme,
 ) {
     let border_type = if active {
         BorderType::Thick
@@ -253,17 +255,17 @@ pub(super) fn render_explorer(
         .title(Line::from(Span::styled(
             " Explorer ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.accent())
                 .add_modifier(Modifier::BOLD),
         )))
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(theme.border()));
     // Empty vault (no `.md` notes anywhere) → show a hint instead of a bare
     // list, so the pane never reads as broken.
     if explorer.is_empty() {
         frame.render_widget(
             ratatui::widgets::Paragraph::new("(empty vault)")
                 .alignment(ratatui::layout::Alignment::Center)
-                .style(Style::default().fg(Color::DarkGray))
+                .style(Style::default().fg(theme.muted()))
                 .block(block),
             area,
         );
@@ -274,14 +276,15 @@ pub(super) fn render_explorer(
         .iter()
         .map(|r| {
             let is_current = current_rel == Some(r.rel_path.as_str());
-            ListItem::new(render_row(r, is_current))
+            ListItem::new(render_row(r, is_current, theme))
         })
         .collect();
     let list = List::new(items)
         .block(block)
         .highlight_style(
             Style::default()
-                .bg(Color::DarkGray)
+                .fg(theme.selection_fg())
+                .bg(theme.selection_bg())
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▶ ");
@@ -292,21 +295,21 @@ pub(super) fn render_explorer(
 /// collapsed) + name, with a trailing `/` on folders. Notes pad two columns so
 /// their names align under folder names (the folder glyph + its trailing space
 /// are 2 cells). The currently-open note (`is_current`) swaps that 2-cell pad
-/// for a Green `● ` + a Green-bold name (Spike 7 P7.3) — the bullet sits in the
-/// same cell the folder glyph would, so names stay vertically aligned.
-fn render_row(row: &Row, is_current: bool) -> Line<'_> {
+/// for a success-colored `● ` + bold name (Spike 7 P7.3) — the bullet sits in
+/// the same cell the folder glyph would, so names stay vertically aligned.
+fn render_row<'a>(row: &'a Row, is_current: bool, theme: &Theme) -> Line<'a> {
     let indent: String = " ".repeat(row.depth * 2);
     match row.kind {
         EntryKind::Folder => {
             let glyph = if row.expanded { "▾" } else { "▸" };
             Line::from(vec![
                 Span::raw(indent),
-                Span::styled(glyph, Style::default().fg(Color::Yellow)),
+                Span::styled(glyph, Style::default().fg(theme.warning())),
                 Span::raw(" "),
                 Span::styled(
                     format!("{}/", row.name),
                     Style::default()
-                        .fg(Color::Blue)
+                        .fg(theme.link())
                         .add_modifier(Modifier::BOLD),
                 ),
             ])
@@ -314,18 +317,18 @@ fn render_row(row: &Row, is_current: bool) -> Line<'_> {
         EntryKind::Note => {
             let name_style = if is_current {
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(theme.success())
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
-            // 2-cell lead: a pad ("  ") normally, or a Green bullet + space
+            // 2-cell lead: a pad ("  ") normally, or a success bullet + space
             // ("● ") for the open note — both 2 cells, so the name column is
             // stable regardless of which note is current.
             let mut spans: Vec<Span<'_>> = Vec::with_capacity(3);
             spans.push(Span::raw(indent));
             if is_current {
-                spans.push(Span::styled("●", Style::default().fg(Color::Green)));
+                spans.push(Span::styled("●", Style::default().fg(theme.success())));
                 spans.push(Span::raw(" "));
             } else {
                 spans.push(Span::raw("  "));

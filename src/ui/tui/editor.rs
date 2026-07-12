@@ -91,6 +91,10 @@ pub(super) struct EditorState {
     /// Capped at 50 — oldest drops first. `reload` is in-place, so history
     /// survives a buffer swap.
     pub(super) note_history: Vec<RelativeNotePath>,
+    /// Resolved Catppuccin theme (v0.4.0). Built once in `run` from the config
+    /// `theme` string; defaults to Latte here until `run` overrides it. Cheap
+    /// to copy (all `Color`); renderers read role colors off it.
+    pub(super) theme: super::theme::Theme,
 }
 
 impl EditorState {
@@ -134,6 +138,7 @@ impl EditorState {
             prompt_kind: None,
             prompt_input: String::new(),
             note_history: Vec::new(),
+            theme: super::theme::Theme::default(),
         }
     }
 

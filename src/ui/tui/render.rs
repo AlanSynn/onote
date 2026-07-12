@@ -84,6 +84,7 @@ pub(super) fn render(app: &App, state: &mut EditorState, frame: &mut Frame) {
             area,
             state.active_pane == ActivePane::Explorer,
             current_rel.as_deref(),
+            &state.theme,
         );
     }
     // `render_editor` records viewport height into `state.view_height` for the
@@ -113,17 +114,17 @@ fn render_path_bar(state: &EditorState, frame: &mut Frame, area: Rect) {
     let line = Line::from(vec![Span::styled(
         format!(" {} ", state.path.as_str()),
         Style::default()
-            .fg(Color::Cyan)
+            .fg(state.theme.accent())
             .add_modifier(Modifier::BOLD),
     )]);
-    let para = Paragraph::new(line).style(Style::default().bg(Color::DarkGray));
+    let para = Paragraph::new(line).style(Style::default().bg(state.theme.bar_bg()));
     frame.render_widget(para, area);
 }
 
 fn render_editor(app: &App, state: &mut EditorState, frame: &mut Frame, area: Rect) -> usize {
     let block = Block::default()
         .borders(Borders::LEFT)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(state.theme.border()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -151,7 +152,16 @@ fn render_editor(app: &App, state: &mut EditorState, frame: &mut Frame, area: Re
         .skip(state.scroll)
         .take(height)
         .enumerate()
-        .map(|(i, l)| render_line(app, l, state.scroll + i, selection, width))
+        .map(|(i, l)| {
+            render_line(
+                app,
+                l,
+                state.scroll + i,
+                selection,
+                width,
+                state.theme.glyph(),
+            )
+        })
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, inner);
@@ -193,9 +203,9 @@ fn render_status(state: &EditorState, frame: &mut Frame, area: Rect) {
     let line = Line::from(vec![
         Span::styled(
             format!(" {} ", state.status.label()),
-            Style::default().fg(state.status.color()),
+            Style::default().fg(state.status.color(&state.theme)),
         ),
-        Span::styled(hint.to_string(), Style::default().fg(Color::DarkGray)),
+        Span::styled(hint.to_string(), Style::default().fg(state.theme.muted())),
         Span::raw(if let Some((_, m)) = &state.message {
             format!("   {m}")
         } else {
@@ -203,7 +213,7 @@ fn render_status(state: &EditorState, frame: &mut Frame, area: Rect) {
         }),
     ]);
     let para = Paragraph::new(line)
-        .style(Style::default().bg(Color::Black))
+        .style(Style::default().bg(state.theme.bar_bg()))
         .alignment(Alignment::Left);
     frame.render_widget(para, area);
     let _ = state.title; // (reserved for future breadcrumb)
@@ -215,7 +225,7 @@ fn render_fuzzy_popup(state: &EditorState, frame: &mut Frame) {
     let block = Block::default().borders(Borders::ALL).title(Span::styled(
         title,
         Style::default()
-            .fg(Color::Yellow)
+            .fg(state.theme.warning())
             .add_modifier(Modifier::BOLD),
     ));
     frame.render_widget(Clear, area);
@@ -230,7 +240,9 @@ fn render_fuzzy_popup(state: &EditorState, frame: &mut Frame) {
             let marker = if i == state.fuzzy_sel { "› " } else { "  " };
             let text = format!("{marker}{} — {}", n.title, n.path.as_str());
             let style = if i == state.fuzzy_sel {
-                Style::default().fg(Color::Black).bg(Color::Yellow)
+                Style::default()
+                    .fg(state.theme.crust())
+                    .bg(state.theme.warning())
             } else {
                 Style::default()
             };
@@ -252,7 +264,7 @@ fn render_search_popup(state: &EditorState, frame: &mut Frame) {
     let block = Block::default().borders(Borders::ALL).title(Span::styled(
         title,
         Style::default()
-            .fg(Color::Cyan)
+            .fg(state.theme.info())
             .add_modifier(Modifier::BOLD),
     ));
     frame.render_widget(Clear, area);
@@ -267,7 +279,9 @@ fn render_search_popup(state: &EditorState, frame: &mut Frame) {
             let sel = i == state.search_sel;
             let marker = if sel { "› " } else { "  " };
             let head_style = if sel {
-                Style::default().fg(Color::Black).bg(Color::Cyan)
+                Style::default()
+                    .fg(state.theme.crust())
+                    .bg(state.theme.info())
             } else {
                 Style::default()
             };
@@ -276,12 +290,14 @@ fn render_search_popup(state: &EditorState, frame: &mut Frame) {
                 head_style,
             )];
             if !h.snippet.is_empty() {
-                // Snippet on the same row, dimmed. On the selected row it inherits
-                // the cyan bg (Yellow-on-Cyan stays readable; DIM-on-Cyan washes out).
+                // Snippet on the same row, dimmed. On the selected row it sits on
+                // the info bg with a high-contrast fg (a muted fg would wash out).
                 let snip_style = if sel {
-                    Style::default().fg(Color::Yellow).bg(Color::Cyan)
+                    Style::default()
+                        .fg(state.theme.crust())
+                        .bg(state.theme.info())
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    Style::default().fg(state.theme.muted())
                 };
                 spans.push(Span::styled(format!("   {}", h.snippet), snip_style));
             }
@@ -298,7 +314,7 @@ fn render_search_popup(state: &EditorState, frame: &mut Frame) {
         };
         vec![Line::from(Span::styled(
             format!("  {hint}"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(state.theme.muted()),
         ))]
     } else {
         items
@@ -324,7 +340,7 @@ fn render_prompt_popup(state: &EditorState, frame: &mut Frame) {
     let block = Block::default().borders(Borders::ALL).title(Span::styled(
         title,
         Style::default()
-            .fg(Color::Yellow)
+            .fg(state.theme.warning())
             .add_modifier(Modifier::BOLD),
     ));
     let lines = vec![
@@ -333,15 +349,15 @@ fn render_prompt_popup(state: &EditorState, frame: &mut Frame) {
             Span::raw(" "),
             Span::styled(
                 state.prompt_input.clone(),
-                Style::default().fg(Color::White),
+                Style::default().fg(state.theme.text()),
             ),
             // Tail cursor: input is appended/popped at the end only.
-            Span::styled("▍", Style::default().fg(Color::Cyan)),
+            Span::styled("▍", Style::default().fg(state.theme.accent())),
         ]),
         Line::from(""),
         Line::from(Span::styled(
             "  type a name · Backspace deletes · Enter confirms",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(state.theme.muted()),
         )),
     ];
     frame.render_widget(Paragraph::new(lines).block(block), area);
@@ -364,17 +380,22 @@ fn render_confirm_popup(state: &EditorState, frame: &mut Frame) {
     };
     let block = Block::default().borders(Borders::ALL).title(Span::styled(
         " confirm delete ",
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(state.theme.error())
+            .add_modifier(Modifier::BOLD),
     ));
     let lines = vec![
         Line::from(""),
         Line::from(vec![
             Span::raw("  delete "),
-            Span::styled(format!("{kind} "), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{kind} "),
+                Style::default().fg(state.theme.warning()),
+            ),
             Span::styled(
                 name.to_string(),
                 Style::default()
-                    .fg(Color::White)
+                    .fg(state.theme.text())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("?"),
@@ -382,7 +403,7 @@ fn render_confirm_popup(state: &EditorState, frame: &mut Frame) {
         Line::from(""),
         Line::from(Span::styled(
             "  this cannot be undone",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(state.theme.muted()),
         )),
         Line::from(""),
         Line::from("  y / Enter   delete"),
@@ -439,10 +460,11 @@ fn render_line(
     line_idx: usize,
     selection: Option<Selection>,
     width: usize,
+    glyph_color: Color,
 ) -> Line<'static> {
     let spans = glyph_spans(app, line);
     let ls = line_selection(line_idx, char_count(line), selection);
-    render_line_from_spans(line, &spans, ls, width)
+    render_line_from_spans(line, &spans, ls, width, glyph_color)
 }
 
 /// Kind of a render segment: a raw text slice from the buffer, or a substituted
@@ -475,9 +497,10 @@ fn render_line_from_spans(
     spans: &[(usize, usize, String)],
     ls: LineSel,
     width: usize,
+    glyph_color: Color,
 ) -> Line<'static> {
     let reverse = Style::default().add_modifier(Modifier::REVERSED);
-    let glyph_style = Style::default().fg(Color::Magenta);
+    let glyph_style = Style::default().fg(glyph_color);
     let glyph_style_sel = glyph_style.patch(Style::default().add_modifier(Modifier::REVERSED));
 
     // Selection char-range on this line. `sel_b = usize::MAX` makes the
@@ -710,7 +733,7 @@ fn render_image_overlay(state: &mut EditorState, frame: &mut Frame) {
     let block = Block::default().borders(Borders::ALL).title(Span::styled(
         format!(" image: {header} · Esc close · o open GUI "),
         Style::default()
-            .fg(Color::Yellow)
+            .fg(state.theme.warning())
             .add_modifier(Modifier::BOLD),
     ));
     let inner = block.inner(area);
@@ -733,7 +756,7 @@ fn render_image_overlay(state: &mut EditorState, frame: &mut Frame) {
                 Line::from(Span::styled(
                     format!(" {}", path.as_str()),
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(state.theme.link())
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::from(""),
@@ -742,7 +765,7 @@ fn render_image_overlay(state: &mut EditorState, frame: &mut Frame) {
                 Line::from(""),
                 Line::from(Span::styled(
                     format!(" no inline preview — {reason}"),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(state.theme.muted()),
                 )),
                 Line::from(""),
                 Line::from("  o             open in Obsidian GUI"),
@@ -894,7 +917,7 @@ mod tests {
     #[test]
     fn render_reverses_partial_text_selection() {
         // "hello", select cols [1,3) = "el" → reversed; the rest stays raw.
-        let line = render_line_from_spans("hello", &[], LineSel::Range(1, 3), 10);
+        let line = render_line_from_spans("hello", &[], LineSel::Range(1, 3), 10, Color::Magenta);
         assert_eq!(reversed_contents(&line), "el");
         let all: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(all, "hello");
@@ -903,10 +926,10 @@ mod tests {
     #[test]
     fn render_reverses_whole_line_and_blank_bar() {
         // Full line → all text reversed.
-        let full = render_line_from_spans("hi", &[], LineSel::Full, 10);
+        let full = render_line_from_spans("hi", &[], LineSel::Full, 10, Color::Magenta);
         assert_eq!(reversed_contents(&full), "hi");
         // Blank line in a multiline selection → full-width reversed bar (C4).
-        let bar = render_line_from_spans("", &[], LineSel::Full, 5);
+        let bar = render_line_from_spans("", &[], LineSel::Full, 5, Color::Magenta);
         assert_eq!(
             reversed_contents(&bar),
             "     ",
@@ -922,7 +945,8 @@ mod tests {
         // char [2,3) — strictly inside the glyph. The whole glyph reverses, the
         // leading "a" (char 0, outside the range) does not.
         let spans = [(1usize, 4usize, "[img]".to_string())];
-        let line = render_line_from_spans("abcdef", &spans, LineSel::Range(2, 3), 10);
+        let line =
+            render_line_from_spans("abcdef", &spans, LineSel::Range(2, 3), 10, Color::Magenta);
         let glyph_span = line
             .spans
             .iter()

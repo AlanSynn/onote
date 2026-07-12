@@ -48,6 +48,11 @@ pub struct Config {
     /// Responsive pane-layout knobs (`[layout]`) — Spike 7 Explorer drawer.
     #[serde(default)]
     pub layout: LayoutConfig,
+    /// Catppuccin flavor for the TUI: `"latte"` (light, default) | `"frappe"` |
+    /// `"macchiato"` | `"mocha"`. Stored as a raw string — config must not know
+    /// `Color`/TUI types (`CLAUDE.md` §1.3); the UI layer parses it to a theme.
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 fn default_note() -> String {
@@ -67,6 +72,9 @@ fn default_backup_remote() -> String {
 }
 fn default_share_port() -> u16 {
     7478
+}
+fn default_theme() -> String {
+    "latte".into()
 }
 
 /// User-overridable keybindings (`[keymap]` in config.toml), overlaid on the
@@ -193,6 +201,7 @@ impl Config {
             share_allow_lan: false,
             keymap: KeymapConfig::default(),
             layout: LayoutConfig::default(),
+            theme: default_theme(),
         }
     }
 
@@ -231,6 +240,8 @@ struct ConfigFile {
     keymap: KeymapConfig,
     #[serde(default)]
     layout: LayoutConfig,
+    #[serde(default = "default_theme")]
+    theme: String,
 }
 
 impl ConfigFile {
@@ -283,6 +294,7 @@ impl ConfigFile {
             share_allow_lan: self.share_allow_lan,
             keymap: self.keymap,
             layout: self.layout,
+            theme: self.theme,
         })
     }
 }
