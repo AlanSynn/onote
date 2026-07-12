@@ -2,7 +2,7 @@
 #
 # Project repo `onote` serves at the /onote/ subpath (the apex alansynn.com is
 # owned by the user-site AlanSynn/alansynn.github.io), so base path is /onote/
-# and there is NO CNAME in this repo. `configure-pages` with enable_pages:true
+# and there is NO CNAME in this repo. `configure-pages` with enablement:true (v5)
 # self-bootstraps Pages (build_type=workflow) on first run — no manual gh api.
 #
 # Build chain mirrors `npm run build`: astro build → markdown/zip downloads →
@@ -47,12 +47,13 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       # Self-enables Pages (build_type=workflow) if not already enabled, and
-      # resolves the base_path used by deploy-pages.
+      # resolves the base_path used by deploy-pages. (v5 input is `enablement`,
+      # not the older `enable_pages`.)
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
         with:
-          enable_pages: true
+          enablement: true
 
       - name: Setup Node
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
