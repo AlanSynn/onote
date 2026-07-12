@@ -1,0 +1,91 @@
+---
+// Copy-to-clipboard button. Props: value (the text to copy), label (button text),
+// copied (text shown for ~1.5s after success). Inline script — no framework.
+interface Props {
+  value: string;
+  label?: string;
+  copied?: string;
+  class?: string;
+}
+const {
+  value,
+  label = 'Copy',
+  copied = 'Copied',
+  class: className = '',
+} = Astro.props;
+---
+
+<button
+  class={`copy ${className}`}
+  type="button"
+  data-copy={value}
+  data-label={label}
+  data-copied={copied}
+  aria-label={`Copy ${label} to clipboard`}
+>
+  <span class="copy__label">{label}</span>
+</button>
+
+<style>
+  .copy {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 0.4rem 0.75rem;
+    border-radius: 0.4rem;
+    border: 1px solid var(--border);
+    background: var(--bg-inset);
+    color: var(--fg);
+    cursor: pointer;
+    transition:
+      color 0.15s ease,
+      border-color 0.15s ease;
+  }
+  .copy:hover {
+    color: var(--fg);
+    border-color: var(--accent);
+  }
+  .copy[aria-live] {
+    color: var(--success);
+    border-color: var(--success);
+  }
+</style>
+
+<script>
+  for (const btn of document.querySelectorAll<HTMLButtonElement>('.copy')) {
+    btn.addEventListener('click', async () => {
+      const value = btn.dataset.copy || '';
+      const label = btn.dataset.label || 'Copy';
+      const copied = btn.dataset.copied || 'Copied';
+      const span = btn.querySelector('.copy__label');
+      try {
+        await navigator.clipboard.writeText(value);
+        if (span) span.textContent = copied;
+        btn.setAttribute('aria-live', 'polite');
+      } catch {
+        // Clipboard API unavailable — select-and-copy fallback
+        const ta = document.createElement('textarea');
+        ta.value = value;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          document.execCommand('copy');
+          if (span) span.textContent = copied;
+          btn.setAttribute('aria-live', 'polite');
+        } catch {
+          if (span) span.textContent = 'Press ⌘C';
+        }
+        ta.remove();
+      }
+      window.setTimeout(() => {
+        if (span) span.textContent = label;
+        btn.removeAttribute('aria-live');
+      }, 1500);
+    });
+  }
+</script>

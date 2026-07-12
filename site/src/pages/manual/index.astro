@@ -1,0 +1,80 @@
+---
+import LandingLayout from '../../layouts/LandingLayout.astro';
+import ManualDownload from '../../components/ManualDownload.astro';
+import { manualGroups } from '../../lib/nav';
+const base = import.meta.env.BASE_URL;
+const groups = await manualGroups();
+const count = groups.reduce((n, g) => n + g.entries.length, 0);
+---
+
+<LandingLayout
+  title="onote manual"
+  description="The complete onote manual — install, editor, features, configuration, commands, theming, architecture, and design guarantees."
+>
+  <section class="container manual-index">
+    <header class="manual-index__head">
+      <p class="eyebrow">reference</p>
+      <h1>The manual</h1>
+      <p class="manual-index__sub">
+        {count} pages, English only. Browse below, search from the sidebar on any page,
+        or grab the whole thing.
+      </p>
+      <ManualDownload />
+    </header>
+
+    {groups.map((g) => (
+      <section class="manual-index__group">
+        <h2>{g.section}</h2>
+        <ul>
+          {g.entries.map((e) => (
+            <li>
+              <a href={`${base}manual/${e.id}`}>{e.title}</a>
+              <p>{e.description}</p>
+            </li>
+          ))}
+        </ul>
+      </section>
+    ))}
+  </section>
+</LandingLayout>
+
+<style>
+  .manual-index {
+    padding-block: 2.5rem;
+    max-width: 52rem;
+  }
+  .manual-index__head h1 {
+    margin: 0.3rem 0 0.5rem;
+  }
+  .manual-index__sub {
+    color: var(--fg-muted);
+    margin-bottom: 1rem;
+  }
+  .manual-index__group {
+    margin-top: 2.5rem;
+  }
+  .manual-index__group h2 {
+    margin: 0 0 1rem;
+    font-size: 1.15rem;
+    color: var(--fg);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.5rem;
+  }
+  .manual-index__group ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 1rem;
+  }
+  .manual-index__group a {
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-weight: 700;
+    font-size: 1rem;
+  }
+  .manual-index__group p {
+    margin: 0.2rem 0 0;
+    color: var(--fg-muted);
+    font-size: 0.92rem;
+  }
+</style>

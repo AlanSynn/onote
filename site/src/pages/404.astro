@@ -1,0 +1,28 @@
+---
+import LandingLayout from '../layouts/LandingLayout.astro';
+import TerminalPane from '../components/TerminalPane.astro';
+const base = import.meta.env.BASE_URL;
+const pathname = Astro.url.pathname;
+---
+
+<LandingLayout
+  title="404 — not found · onote"
+  description="That page doesn't exist in the onote docs."
+>
+  <section class="container nf">
+    <TerminalPane path="~/onote" status="exit 1">
+<span class="t-error">error</span><span class="t-muted">: no such page </span><span class="t-glyph">{pathname}</span>
+
+<span class="t-muted"># the path you followed isn't in this vault.</span>
+
+<span class="t-accent">$</span> <a href={base} class="t-success">cd ~</a><span class="t-muted">      # back to the landing</span>
+<span class="t-accent">$</span> <a href={`${base}manual`} class="t-success">open manual</a><span class="t-muted">  # the full index</span></div>
+  </section>
+</LandingLayout>
+
+<style>
+  .nf {
+    max-width: 44rem;
+    padding-block: 4rem;
+  }
+</style>

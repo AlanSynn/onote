@@ -1,0 +1,35 @@
+---
+// Whole-manual downloads: single Markdown, zipped Markdown, and the
+// Typst-typeset PDF. All produced by the build scripts and served under
+// /onote/download/. Used in the manual top bar + manual index.
+const base = import.meta.env.BASE_URL;
+const dl = `${base}download/onote-manual`;
+---
+
+<div class="mdl">
+  <span class="mdl__label">Download manual:</span>
+  <a href={`${dl}.md`}>Markdown</a>
+  <span aria-hidden="true">·</span>
+  <a href={`${dl}.zip`}>.zip</a>
+  <span aria-hidden="true">·</span>
+  <a href={`${dl}.pdf`}>PDF</a>
+</div>
+
+<style>
+  .mdl {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-size: 0.78rem;
+    color: var(--fg-muted);
+  }
+  .mdl__label {
+    color: var(--fg-muted);
+    margin-right: 0.15rem;
+  }
+  .mdl a {
+    font-weight: 600;
+  }
+</style>

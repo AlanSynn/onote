@@ -1,0 +1,93 @@
+---
+import ThemeToggle from './ThemeToggle.astro';
+// Top bar. `import.meta.env.BASE_URL` is '/onote/' (Astro base + trailing slash),
+// so internal links are built off it rather than root-absolute '/' (which Astro
+// does NOT reliably prefix with base → 404 under the subpath).
+const base = import.meta.env.BASE_URL;
+const repo = 'https://github.com/AlanSynn/onote';
+---
+
+<header class="nav" data-pagefind-ignore>
+  <div class="nav__inner container">
+    <a class="nav__brand" href={base}>
+      <span class="nav__mark" aria-hidden="true">❯</span>
+      <span class="nav__word">onote</span>
+      <span class="nav__slash">/</span>
+      <span class="nav__sub">docs</span>
+    </a>
+    <nav class="nav__links" aria-label="Primary">
+      <a href={`${base}manual`}>Manual</a>
+      <a href={`${base}manual/install`}>Install</a>
+      <a href={repo} rel="noopener">GitHub</a>
+      <ThemeToggle />
+    </nav>
+  </div>
+</header>
+
+<style>
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: saturate(1.4) blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav__inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    height: 3.6rem;
+  }
+  .nav__brand {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-weight: 700;
+    font-size: 1.05rem;
+    color: var(--fg);
+    text-decoration: none;
+  }
+  .nav__brand:hover {
+    text-decoration: none;
+  }
+  .nav__mark {
+    color: var(--accent-text);
+  }
+  .nav__word {
+    letter-spacing: -0.02em;
+  }
+  .nav__slash {
+    color: var(--fg-muted);
+    margin: 0 0.1rem;
+  }
+  .nav__sub {
+    color: var(--ctp-subtext1);
+    font-weight: 500;
+    font-size: 0.9em;
+  }
+  .nav__links {
+    display: inline-flex;
+    align-items: center;
+    gap: 1.1rem;
+  }
+  .nav__links a {
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--fg-muted);
+    text-decoration: none;
+  }
+  .nav__links a:hover {
+    color: var(--accent-text);
+    text-decoration: none;
+  }
+  @media (max-width: 560px) {
+    .nav__sub,
+    .nav__slash {
+      display: none;
+    }
+  }
+</style>

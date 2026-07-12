@@ -1,0 +1,35 @@
+---
+// Signature element: a stylized onote terminal session. Renders the in-app TUI
+// shape (path bar · body · status line) in Catppuccin colors. Callers compose
+// the body with semantic spans (.t-accent/.t-glyph/.t-muted/.t-success…) from
+// terminal.css. The optional caret blinks unless prefers-reduced-motion.
+interface Props {
+  path: string;
+  status?: string;
+  caret?: boolean;
+  dots?: boolean;
+  class?: string;
+}
+const { path, status, caret = false, dots = true, class: className = '' } = Astro.props;
+---
+
+<div class={`term ${className}`} aria-hidden="true">
+  <div class="term__bar">
+    {dots && (
+      <span class="term__dots" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </span>
+    )}
+    <span class="term__path">{path}</span>
+  </div>
+  <div class="term__body">
+    <slot />
+    {caret && <span class="caret caret--blink" aria-hidden="true"></span>}
+  </div>
+  {status && (
+    <div class="term__status">
+      <span class="dot">●</span>
+      <span>{status}</span>
+    </div>
+  )}
+</div>

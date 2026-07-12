@@ -1,0 +1,80 @@
+---
+// Feature bento cell. Wraps a link card with a mono glyph, title, and
+// description. `wide` spans two columns on the bento grid for the hero cells
+// (editor + share-QR). `accent` lifts the card with a lavender border.
+interface Props {
+  title: string;
+  href: string;
+  description: string;
+  glyph?: string;
+  wide?: boolean;
+  accent?: boolean;
+}
+const { title, href, description, glyph, wide = false, accent = false } = Astro.props;
+---
+
+<a
+  class:list={['feature', { 'feature--wide': wide, 'feature--accent': accent }]}
+  href={href}
+>
+  {glyph && <span class="feature__glyph" aria-hidden="true">{glyph}</span>}
+  <span class="feature__title">{title}</span>
+  <span class="feature__desc">{description}</span>
+</a>
+
+<style>
+  .feature {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 1.25rem 1.35rem;
+    border-radius: 0.7rem;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--fg);
+    text-decoration: none;
+    transition:
+      border-color 0.15s ease,
+      transform 0.15s ease,
+      box-shadow 0.15s ease;
+  }
+  .feature:hover {
+    text-decoration: none;
+    border-color: var(--accent);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow);
+  }
+  .feature--accent {
+    border-color: var(--accent);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent) 8%, var(--bg-elevated)),
+      var(--bg-elevated)
+    );
+  }
+  .feature--wide {
+    grid-column: span 2;
+  }
+  .feature__glyph {
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-size: 1.1rem;
+    color: var(--glyph);
+    margin-bottom: 0.15rem;
+  }
+  .feature__title {
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-weight: 700;
+    font-size: 1.05rem;
+    letter-spacing: -0.01em;
+  }
+  .feature__desc {
+    font-size: 0.92rem;
+    color: var(--fg-muted);
+    line-height: 1.5;
+  }
+  @media (max-width: 640px) {
+    .feature--wide {
+      grid-column: span 1;
+    }
+  }
+</style>

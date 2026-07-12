@@ -1,0 +1,113 @@
+---
+import { manualGroups } from '../lib/nav';
+import Search from './Search.astro';
+// Left sidebar for the manual: Pagefind search + grouped nav with active state.
+// On desktop it's a sticky aside; on ≤md it collapses into a checkbox-hack
+// disclosure ("Contents") so it never eats the reading column on phones.
+interface Props {
+  current?: string;
+}
+const { current } = Astro.props;
+const base = import.meta.env.BASE_URL;
+const groups = await manualGroups();
+---
+
+<aside class="sidebar" data-pagefind-ignore>
+  <input type="checkbox" id="nav-toggle" class="sidebar__toggle" aria-hidden="true" hidden />
+  <label for="nav-toggle" class="sidebar__disclosure">
+    <span aria-hidden="true">☰</span> Contents
+  </label>
+  <div class="sidebar__panel">
+    <Search />
+    <nav aria-label="Manual contents">
+      {groups.map((g) => (
+        <div class="sidebar__group">
+          <p class="sidebar__heading">{g.section}</p>
+          <ul>
+            {g.entries.map((e) => (
+              <li>
+                <a
+                  href={`${base}manual/${e.id}`}
+                  aria-current={e.id === current ? 'page' : undefined}
+                  class:list={['sidebar__link', { 'sidebar__link--active': e.id === current }]}
+                >
+                  {e.title}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </nav>
+  </div>
+</aside>
+
+<style>
+  .sidebar {
+    font-size: 0.88rem;
+  }
+  .sidebar__disclosure {
+    display: none;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 0.9rem;
+    margin-bottom: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    background: var(--bg-inset);
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-size: 0.82rem;
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .sidebar__group {
+    margin-bottom: 1.1rem;
+  }
+  .sidebar__heading {
+    font-family: 'JetBrains Mono Variable', monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: var(--fg-muted);
+    margin: 0 0 0.35rem;
+    padding: 0 0.6rem;
+  }
+  .sidebar ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .sidebar__link {
+    display: block;
+    padding: 0.32rem 0.6rem;
+    border-radius: 0.35rem;
+    color: var(--fg-muted);
+    text-decoration: none;
+    line-height: 1.35;
+  }
+  .sidebar__link:hover {
+    background: var(--bg-inset);
+    color: var(--fg);
+    text-decoration: none;
+  }
+  .sidebar__link--active {
+    color: var(--fg);
+    font-weight: 600;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .sidebar__toggle:checked + .sidebar__disclosure::after {
+    content: ' ▾';
+  }
+
+  /* Mobile disclosure: ≤1023px the panel is hidden until the checkbox is ticked. */
+  @media (max-width: 1023px) {
+    .sidebar__disclosure {
+      display: flex;
+    }
+    .sidebar__toggle:not(:checked) ~ .sidebar__panel {
+      display: none;
+    }
+  }
+</style>

@@ -1,0 +1,35 @@
+---
+// Per-page Markdown download. build-downloads.mjs copies each source page to
+// dist/manual/<id>.md, served at /onote/manual/<id>.md. Shown in the page footer.
+interface Props {
+  id: string;
+}
+const { id } = Astro.props;
+const base = import.meta.env.BASE_URL;
+---
+
+<a class="pagedl" href={`${base}manual/${id}.md`} download>
+  <span aria-hidden="true">↓</span> Download this page (Markdown)
+</a>
+
+<style>
+  .pagedl {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 0.4rem 0.75rem;
+    border-radius: 0.4rem;
+    border: 1px solid var(--border);
+    background: var(--bg-inset);
+    color: var(--fg);
+    text-decoration: none;
+  }
+  .pagedl:hover {
+    color: var(--accent-text);
+    border-color: var(--accent-text);
+    text-decoration: none;
+  }
+</style>

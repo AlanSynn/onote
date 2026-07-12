@@ -1,0 +1,131 @@
+/*
+ * terminal.css — the signature terminal-pane motif.
+ * Used by the hero TerminalPane and every fenced code example block that wants
+ * the "onote session" look (path bar · body · status line). Box-drawing borders
+ * echo the in-app TUI frame.
+ */
+
+.term {
+  background: var(--bg-pane);
+  border: 1px solid var(--border);
+  border-radius: 0.7rem;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  font-family: 'JetBrains Mono Variable', ui-monospace, monospace;
+  font-size: 0.86rem;
+  line-height: 1.6;
+  color: var(--fg);
+}
+
+.term__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.8rem;
+  background: var(--bar-bg);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+}
+
+.term__dots {
+  display: inline-flex;
+  gap: 0.4rem;
+  margin-right: 0.35rem;
+}
+.term__dots span {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: var(--ctp-overlay0);
+}
+.term__dots span:nth-child(1) {
+  background: var(--ctp-red);
+}
+.term__dots span:nth-child(2) {
+  background: var(--ctp-yellow);
+}
+.term__dots span:nth-child(3) {
+  background: var(--ctp-green);
+}
+
+.term__path {
+  font-family: inherit;
+  letter-spacing: 0;
+}
+
+.term__body {
+  padding: 1rem 1.15rem;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--fg);
+}
+.term__body code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  color: inherit;
+}
+
+.term__status {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.8rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg-sunken);
+  font-size: 0.76rem;
+  color: var(--fg-muted);
+}
+.term__status .dot {
+  color: var(--success);
+}
+
+/* Inline semantic colors used inside terminal panes */
+.t-accent {
+  color: var(--accent-text);
+}
+.t-glyph {
+  color: var(--glyph);
+}
+.t-muted {
+  color: var(--fg-muted);
+}
+.t-success {
+  color: var(--success);
+}
+.t-warn {
+  color: var(--warning);
+}
+.t-error {
+  color: var(--error);
+}
+.t-info {
+  color: var(--link);
+}
+
+/* Hero caret — blinks; killed by prefers-reduced-motion (base.css nukes it, and
+   TerminalPane also gates via matchMedia + the .caret--blink class). */
+.caret {
+  display: inline-block;
+  width: 0.55ch;
+  height: 1.05em;
+  margin-left: 0.05ch;
+  background: var(--glyph);
+  vertical-align: text-bottom;
+  transform: translateY(0.08em);
+}
+.caret--blink {
+  animation: caret-blink 1.05s steps(1) infinite;
+}
+@keyframes caret-blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  50.01%,
+  100% {
+    opacity: 0;
+  }
+}

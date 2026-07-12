@@ -1,0 +1,366 @@
+---
+import LandingLayout from '../layouts/LandingLayout.astro';
+import TerminalPane from '../components/TerminalPane.astro';
+import FeatureCard from '../components/FeatureCard.astro';
+import CopyButton from '../components/CopyButton.astro';
+const base = import.meta.env.BASE_URL;
+const m = (slug: string) => `${base}manual/${slug}`;
+---
+
+<LandingLayout
+  title="onote — the terminal scratchpad for your obsidian vault"
+  description="A fast, keyboard-driven, local-first Markdown vault client for the terminal. Obsidian-compatible, not Obsidian-dependent. Catppuccin-themed. Single Rust binary."
+>
+  <!-- ── Hero ─────────────────────────────────────────────────────────── -->
+  <section class="hero container">
+    <div class="hero__copy">
+      <p class="eyebrow">terminal · markdown · local-first</p>
+      <h1 class="hero__wordmark"><span class="t-accent">❯</span>onote</h1>
+      <p class="hero__lede">
+        The terminal scratchpad for your <span class="t-glyph">obsidian</span> vault.
+        Fast, keyboard-driven Markdown editing — paste images, preview them inline,
+        share read-only over HTTP, back up to Git. No editor lock-in.
+      </p>
+      <div class="hero__install">
+        <span class="hero__prompt t-accent">$</span>
+        <code>brew install alansynn/tap/onote</code>
+        <CopyButton value="brew install alansynn/tap/onote" label="Copy" copied="Copied" />
+      </div>
+      <div class="hero__cta">
+        <a class="btn btn--primary" href={`${base}manual/getting-started`}>Get started</a>
+        <a class="btn" href={`${base}manual`}>Read the manual</a>
+      </div>
+      <p class="hero__alt">
+        or <a href={`${base}manual/install`}>scoop</a> ·
+        <a href={`${base}manual/install`}>curl | sh</a> ·
+        <a href={`${base}manual/install`}>cargo</a> — all prebuilt.
+      </p>
+    </div>
+
+    <div class="hero__pane">
+      <TerminalPane path="~/Notes/Scratch.md" status="saved · local" caret={true}>
+<span class="t-accent">#</span> <span class="t-glyph">Scratch</span>
+
+quick ideas, always one keystroke away.
+<span class="t-muted">- ship the docs site</span>
+<span class="t-muted">- paste the screenshot (Ctrl+P)</span>
+<span class="t-info">![image: 2026-07-12-0931.png]</span>
+
+<span class="t-muted">[[ Daily/2026-07-12 ]]</span></div>
+    </div>
+  </section>
+
+  <!-- ── Why ─────────────────────────────────────────────────────────── -->
+  <section class="container why">
+    <div class="why__cell">
+      <p class="eyebrow">local-first</p>
+      <p>Read, edit, save, search, preview, and back up — all offline. The network is an optional feature, never a dependency.</p>
+    </div>
+    <div class="why__cell">
+      <p class="eyebrow">obsidian-compatible</p>
+      <p>Operates on any Markdown folder, and understands <code>[[wikilinks]]</code>, embeds, tags, frontmatter, and daily notes. Not dependent on <code>.obsidian/</code>.</p>
+    </div>
+    <div class="why__cell">
+      <p class="eyebrow">no silent overwrites</p>
+      <p>Every buffer tracks its hash. If the file changed on disk, onote stops — reload or conflict-copy, never clobber.</p>
+    </div>
+  </section>
+
+  <!-- ── Feature bento ───────────────────────────────────────────────── -->
+  <section class="container bento-wrap">
+    <header class="bento-head">
+      <p class="eyebrow">features</p>
+      <h2>One binary. The whole vault.</h2>
+    </header>
+    <div class="bento">
+      <FeatureCard
+        wide
+        accent
+        glyph="✎"
+        title="Markdown editor"
+        href={m('editor')}
+        description="Grapheme-aware selection, responsive wrap on every width, no-silent-overwrite saves, fuzzy open, and full-text search over the vault."
+      />
+      <FeatureCard
+        wide
+        glyph="⤴"
+        title="Read-only share"
+        href={m('share')}
+        description="Serve a snapshot of the current note over local HTTP with a tokenized URL and a QR code. Loopback or LAN."
+      />
+      <FeatureCard
+        glyph="❲❳"
+        title="Images"
+        href={m('images')}
+        description="Paste from clipboard into a timestamped attachment; preview inline via Sixel/Kitty/iTerm2."
+      />
+      <FeatureCard
+        glyph="⌕"
+        title="Fuzzy + full-text"
+        href={m('commands')}
+        description="Open by title with nucleo fuzzy match; search body content with SQLite FTS5."
+      />
+      <FeatureCard
+        glyph="⎇"
+        title="Git backup"
+        href={m('backup')}
+        description="Status, commit, push, pull --ff-only. Never mutates content; .onote/ is excluded."
+      />
+      <FeatureCard
+        glyph="☰"
+        title="Explorer"
+        href={m('explorer')}
+        description="Drawer with raw file-op keys — create, rename, delete — behind a confirm prompt."
+      />
+      <FeatureCard
+        glyph="◐"
+        title="Catppuccin theming"
+        href={m('theming')}
+        description="Latte, Frappé, Macchiato, Mocha. Case-insensitive, unpainted large surfaces, semantic roles."
+      />
+      <FeatureCard
+        glyph="↹"
+        title="Responsive wrap"
+        href={m('editor')}
+        description="Grapheme-aware reflow on resize — editor and drawers stay readable on narrow terminals."
+      />
+    </div>
+  </section>
+
+  <!-- ── Install ─────────────────────────────────────────────────────── -->
+  <section class="container install">
+    <header class="install__head">
+      <p class="eyebrow">install</p>
+      <h2>Prebuilt for every platform.</h2>
+      <p class="install__sub">macOS arm64/x86_64, Linux x86_64 (static musl) + arm64, Windows x86_64. Verify with <code>onote --version</code>.</p>
+    </header>
+    <div class="install__grid">
+      <div class="install__cell">
+        <p class="install__label">macOS — Homebrew</p>
+        <div class="install__cmd">
+          <code>brew install alansynn/tap/onote</code>
+          <CopyButton value="brew install alansynn/tap/onote" />
+        </div>
+      </div>
+      <div class="install__cell">
+        <p class="install__label">Windows — Scoop</p>
+        <div class="install__cmd">
+          <code>scoop bucket add alansynn/scoop
+scoop install onote</code>
+          <CopyButton value={`scoop bucket add alansynn/scoop
+scoop install onote`} />
+        </div>
+      </div>
+      <div class="install__cell">
+        <p class="install__label">Linux / Unix — curl</p>
+        <div class="install__cmd">
+          <code>curl -L https://raw.githubusercontent.com/AlanSynn/onote/main/install.sh | sh</code>
+          <CopyButton value="curl -L https://raw.githubusercontent.com/AlanSynn/onote/main/install.sh | sh" />
+        </div>
+      </div>
+      <div class="install__cell">
+        <p class="install__label">From source</p>
+        <div class="install__cmd">
+          <code>cargo install --path . --locked</code>
+          <CopyButton value="cargo install --path . --locked" />
+        </div>
+      </div>
+    </div>
+    <p class="install__more">
+      Pin a release with <code>ONOTE_TAG=v0.4.1</code>, force a build with <code>--from-source</code>, or grab a <code>.deb</code> — see the <a href={`${base}manual/install`}>install guide</a>.
+    </p>
+  </section>
+
+  <!-- ── Demo strip ──────────────────────────────────────────────────── -->
+  <section class="container demo">
+    <p class="eyebrow">a real session</p>
+    <TerminalPane path="~/Notes/Notes/robot-idea.md" status="saved · local" caret={true}>
+<span class="t-accent">$</span> onote open <span class="t-glyph">"robot"</span>
+
+<span class="t-accent">#</span> <span class="t-glyph">robot idea</span>
+<span class="t-muted">a small bot that files inbox notes by tag.</span>
+
+<span class="t-info">![image: 2026-07-12-robot-sketch.png]</span>
+
+<span class="t-success">● saved</span> <span class="t-muted">· local · latte</span></div>
+  </section>
+</LandingLayout>
+
+<style>
+  .hero {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 3rem;
+    align-items: center;
+    padding-block: clamp(2.5rem, 6vw, 5rem) 3rem;
+  }
+  .hero__wordmark {
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-size: clamp(2.75rem, 7vw, 4.75rem);
+    line-height: 1;
+    letter-spacing: -0.04em;
+    margin: 0.5rem 0 1rem;
+  }
+  .hero__lede {
+    font-size: 1.1rem;
+    line-height: 1.6;
+    color: var(--fg-muted);
+    max-width: 34rem;
+    margin-bottom: 1.6rem;
+  }
+  .hero__install {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.6rem 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 0.55rem;
+    background: var(--bg-elevated);
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-size: 0.88rem;
+    margin-bottom: 1.3rem;
+  }
+  .hero__install code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--fg);
+  }
+  .hero__cta {
+    display: inline-flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.9rem;
+  }
+  .hero__alt {
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-size: 0.8rem;
+    color: var(--fg-muted);
+    margin: 0;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.65rem 1.1rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--border);
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--fg);
+    text-decoration: none;
+    background: var(--bg-elevated);
+  }
+  .btn:hover {
+    text-decoration: none;
+    border-color: var(--accent);
+  }
+  .btn--primary {
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-color: var(--accent);
+  }
+  .btn--primary:hover {
+    filter: brightness(1.05);
+  }
+
+  .why {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.5rem;
+    padding-block: 2rem;
+    border-block: 1px solid var(--border);
+  }
+  .why__cell p:last-child {
+    color: var(--fg-muted);
+    font-size: 0.96rem;
+    margin: 0;
+  }
+
+  .bento-wrap,
+  .install,
+  .demo {
+    padding-block: 3rem;
+  }
+  .bento-head,
+  .install__head {
+    margin-bottom: 1.75rem;
+  }
+  .bento-head h2,
+  .install__head h2 {
+    margin-top: 0.3rem;
+    margin-bottom: 0.4rem;
+  }
+  .install__sub {
+    color: var(--fg-muted);
+    max-width: 40rem;
+  }
+  .bento {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1rem;
+  }
+
+  .install__grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1rem;
+  }
+  .install__cell {
+    border: 1px solid var(--border);
+    border-radius: 0.6rem;
+    background: var(--bg-elevated);
+    padding: 1rem 1.1rem;
+  }
+  .install__label {
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-muted);
+    margin: 0 0 0.6rem;
+  }
+  .install__cmd {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+  .install__cmd code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    padding: 0.5rem 0.7rem;
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+    flex: 1;
+  }
+  .install__more {
+    margin-top: 1.25rem;
+    color: var(--fg-muted);
+    font-size: 0.9rem;
+  }
+  .demo {
+    max-width: 52rem;
+  }
+
+  @media (max-width: 900px) {
+    .hero {
+      grid-template-columns: 1fr;
+    }
+    .why {
+      grid-template-columns: 1fr;
+    }
+    .bento {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+  @media (max-width: 560px) {
+    .bento {
+      grid-template-columns: 1fr;
+    }
+    .install__grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

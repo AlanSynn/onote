@@ -1,0 +1,70 @@
+---
+// Theme toggle. Latte ☀ / Mocha ☾. Reads the current data-theme (set pre-paint
+// by theme-init), flips it, persists to localStorage['onote-theme']. Server
+// renders an SSR-safe default (latte) so the button label matches the no-JS
+// state; the inline island corrects it on mount.
+---
+
+<button
+  id="theme-toggle"
+  class="theme-toggle"
+  type="button"
+  title="Toggle theme (Latte / Mocha)"
+  data-theme-latte="Latte ☀"
+  data-theme-mocha="Mocha ☾"
+>
+  <span class="theme-toggle__label">Latte ☀</span>
+</button>
+
+<style>
+  .theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: 'JetBrains Mono Variable', monospace;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 0.35rem 0.7rem;
+    border-radius: 0.4rem;
+    border: 1px solid var(--border);
+    background: var(--bg-inset);
+    color: var(--fg);
+    cursor: pointer;
+    transition:
+      color 0.15s ease,
+      border-color 0.15s ease,
+      background 0.15s ease;
+  }
+  .theme-toggle:hover {
+    color: var(--fg);
+    border-color: var(--accent);
+  }
+</style>
+
+<script>
+  const btn = document.getElementById('theme-toggle');
+  const label = btn?.querySelector('.theme-toggle__label');
+  function sync() {
+    const current = document.documentElement.getAttribute('data-theme') || 'latte';
+    if (label) {
+      label.textContent =
+        current === 'mocha'
+          ? btn?.getAttribute('data-theme-mocha') || 'Mocha ☾'
+          : btn?.getAttribute('data-theme-latte') || 'Latte ☀';
+    }
+  }
+  sync();
+  btn?.addEventListener('click', () => {
+    const next =
+      (document.documentElement.getAttribute('data-theme') || 'latte') === 'mocha'
+        ? 'latte'
+        : 'mocha';
+    document.documentElement.setAttribute('data-theme', next);
+    try {
+      localStorage.setItem('onote-theme', next);
+    } catch (_) {
+      /* storage unavailable — keep the session-only toggle */
+    }
+    sync();
+  });
+</script>

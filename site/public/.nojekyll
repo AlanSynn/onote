@@ -1,0 +1,2 @@
+# Tell GitHub Pages to NOT run Jekyll. We ship a prebuilt Astro site with
+# underscore/dot-prefixed assets (Pagefind bundles, fonts) that Jekyll would drop.

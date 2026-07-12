@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="onote">
+  <!-- onote mark: a terminal pane glyph in Catppuccin Latte/Mocha lavender.
+       base (pane), surface0 (top bar), lavender (prompt chevron), mauve (caret). -->
+  <rect x="2" y="4" width="28" height="24" rx="3" fill="#eff1f5" stroke="#ccd0da" stroke-width="1.5"/>
+  <rect x="2" y="4" width="28" height="6" rx="3" fill="#ccd0da"/>
+  <rect x="2" y="8" width="28" height="2" fill="#ccd0da"/>
+  <text x="7" y="23" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700" fill="#7287fd">&#x276F;</text>
+  <rect x="13" y="19" width="2" height="6" rx="0.5" fill="#8839ef"/>
+</svg>

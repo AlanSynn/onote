@@ -1,0 +1,134 @@
+/*
+ * Catppuccin Latte (light, default) + Mocha (dark) — token layer.
+ * Hexes mirror src/ui/tui/theme.rs (LATTE/MOCHA consts, lines 60–174) so the
+ * docs site and the running app share one palette. Accent = lavender (app's
+ * `accent()`, theme.rs:262); mauve is the app's `glyph()` (theme.rs:278),
+ * reserved here for image/paste motifs.
+ *
+ * Latte ref: https://catppuccin.com/palette/  ·  v0.3 canonical values.
+ */
+
+:root,
+[data-theme='latte'] {
+  /* flavor primitives */
+  --ctp-rosewater: #dc8a78;
+  --ctp-flamingo: #dd7878;
+  --ctp-pink: #ea76cb;
+  --ctp-mauve: #8839ef;
+  --ctp-red: #d20f39;
+  --ctp-maroon: #e64553;
+  --ctp-peach: #fe640b;
+  --ctp-yellow: #df8e1d;
+  --ctp-green: #40a02b;
+  --ctp-teal: #179299;
+  --ctp-sky: #04a5e5;
+  --ctp-sapphire: #209fb5;
+  --ctp-blue: #1e66f5;
+  --ctp-lavender: #7287fd;
+  --ctp-text: #4c4f69;
+  --ctp-subtext1: #5c5f77;
+  --ctp-subtext0: #6c6f85;
+  --ctp-overlay2: #7c7f93;
+  --ctp-overlay1: #8c8fa1;
+  --ctp-overlay0: #9ca0b0;
+  --ctp-surface2: #acb0be;
+  --ctp-surface1: #bcc0cc;
+  --ctp-surface0: #ccd0da;
+  --ctp-base: #eff1f5;
+  --ctp-mantle: #e6e9ef;
+  --ctp-crust: #dce0e8;
+}
+
+[data-theme='mocha'] {
+  --ctp-rosewater: #f5e0dc;
+  --ctp-flamingo: #f2cdcd;
+  --ctp-pink: #f5c2e7;
+  --ctp-mauve: #cba6f7;
+  --ctp-red: #f38ba8;
+  --ctp-maroon: #eba0ac;
+  --ctp-peach: #fab387;
+  --ctp-yellow: #f9e2af;
+  --ctp-green: #a6e3a1;
+  --ctp-teal: #94e2d5;
+  --ctp-sky: #89dceb;
+  --ctp-sapphire: #74c7ec;
+  --ctp-blue: #89b4fa;
+  --ctp-lavender: #b4befe;
+  --ctp-text: #cdd6f4;
+  --ctp-subtext1: #bac2de;
+  --ctp-subtext0: #a6adc8;
+  --ctp-overlay2: #9399b2;
+  --ctp-overlay1: #7f849c;
+  --ctp-overlay0: #6c7086;
+  --ctp-surface2: #585b70;
+  --ctp-surface1: #45475a;
+  --ctp-surface0: #313244;
+  --ctp-base: #1e1e2e;
+  --ctp-mantle: #181825;
+  --ctp-crust: #11111b;
+}
+
+/*
+ * Semantic roles — the rest of the site consumes these, not the primitives.
+ * Mirrors the semantic accessors in Theme (theme.rs): text, muted, border,
+ * accent (=lavender), glyph (=mauve), link, success, warning, error, info,
+ * bar-bg (=surface1), selection-bg (=surface2).
+ */
+:root,
+[data-theme='latte'] {
+  --bg: var(--ctp-base);
+  --bg-elevated: var(--ctp-crust);
+  --bg-sunken: var(--ctp-mantle);
+  --bg-pane: var(--ctp-base);
+  --bg-inset: var(--ctp-surface0);
+  --fg: var(--ctp-text);
+  --fg-muted: var(--ctp-subtext1);
+  --fg-subtle: var(--ctp-overlay1);
+  --border: var(--ctp-overlay0);
+  --border-strong: var(--ctp-overlay1);
+  --accent: var(--ctp-lavender);
+  --accent-text: var(--ctp-mauve);
+  --accent-fg: #1e1e2e;
+  --accent-contrast: var(--ctp-crust);
+  --glyph: var(--ctp-mauve);
+  --link: #1956cc;
+  --success: var(--ctp-green);
+  --warning: var(--ctp-yellow);
+  --error: var(--ctp-red);
+  --info: var(--ctp-sky);
+  --bar-bg: var(--ctp-mantle);
+  --selection-bg: var(--ctp-surface2);
+  --code-bg: var(--ctp-crust);
+  --shadow: 0 1px 2px rgba(76, 79, 105, 0.06), 0 8px 24px rgba(76, 79, 105, 0.08);
+  --shadow-lg: 0 4px 12px rgba(76, 79, 105, 0.08), 0 24px 48px rgba(76, 79, 105, 0.12);
+  color-scheme: light;
+}
+
+[data-theme='mocha'] {
+  --bg: var(--ctp-base);
+  --bg-elevated: var(--ctp-mantle);
+  --bg-sunken: var(--ctp-crust);
+  --bg-pane: var(--ctp-crust);
+  --bg-inset: var(--ctp-surface0);
+  --fg: var(--ctp-text);
+  --fg-muted: var(--ctp-subtext1);
+  --fg-subtle: var(--ctp-overlay1);
+  --border: var(--ctp-surface0);
+  --border-strong: var(--ctp-surface1);
+  --accent: var(--ctp-lavender);
+  --accent-text: var(--ctp-lavender);
+  --accent-fg: #1e1e2e;
+  --accent-contrast: var(--ctp-base);
+  --glyph: var(--ctp-mauve);
+  --link: var(--ctp-blue);
+  --success: var(--ctp-green);
+  --warning: var(--ctp-yellow);
+  --error: var(--ctp-red);
+  --info: var(--ctp-sky);
+  --bar-bg: var(--ctp-surface0);
+  --selection-bg: var(--ctp-surface1);
+  --code-bg: var(--ctp-mantle);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.35), 0 24px 48px rgba(0, 0, 0, 0.4);
+  color-scheme: dark;
+}

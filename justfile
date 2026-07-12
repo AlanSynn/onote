@@ -103,3 +103,31 @@ clean:
 # Update dependencies in Cargo.lock (review the diff before committing).
 update:
     cargo update
+
+# ── Docs site (site/ → GitHub Pages at alansynn.com/onote/) ───────────────
+# The site is isolated under site/ with its own package.json. It never touches
+# the Rust build or just ci; ci.yml/release.yml are unaffected.
+
+# Install the site's Node deps (idempotent — uses npm install locally).
+site-install:
+    cd site && npm install
+
+# Local dev server with HMR (http://localhost:4321/onote/).
+site: site-install
+    cd site && npm run dev
+
+# Full production build: astro → markdown/zip downloads → Typst PDF → Pagefind.
+site-build:
+    cd site && npm run build
+
+# Type-check the site without codegen (fastest signal while editing .astro).
+site-check:
+    cd site && npx astro check
+
+# Build only the downloadable PDF (whole-manual Typst typeset).
+pdf:
+    cd site && npm run build:downloads && npm run build:pdf
+
+# Preview the built site/dist locally.
+site-preview: site-build
+    cd site && npm run preview

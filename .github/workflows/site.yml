@@ -1,0 +1,90 @@
+# Docs + landing site → GitHub Pages at alansynn.com/onote/.
+#
+# Project repo `onote` serves at the /onote/ subpath (the apex alansynn.com is
+# owned by the user-site AlanSynn/alansynn.github.io), so base path is /onote/
+# and there is NO CNAME in this repo. `configure-pages` with enable_pages:true
+# self-bootstraps Pages (build_type=workflow) on first run — no manual gh api.
+#
+# Build chain mirrors `npm run build`: astro build → markdown/zip downloads →
+# Typst PDF (via pandoc) → Pagefind index, then upload-pages-artifact +
+# deploy-pages. ci.yml / release.yml are untouched; the site is isolated under
+# site/ with its own package.json.
+#
+# Actions are SHA-pinned to match ci.yml/release.yml style.
+name: Site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Only one Pages deploy at a time; the latest push wins.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    # Pages deploy needs OIDC (id-token) + the pages scope.
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      # Self-enables Pages (build_type=workflow) if not already enabled, and
+      # resolves the base_path used by deploy-pages.
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+        with:
+          enable_pages: true
+
+      - name: Setup Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install pandoc
+        run: sudo apt-get update && sudo apt-get install -y pandoc
+
+      - name: Install typst (prebuilt musl static binary)
+        run: |
+          set -eu
+          VER=v0.15.0
+          curl -fsSL "https://github.com/typst/typst/releases/download/${VER}/typst-x86_64-unknown-linux-musl.tar.xz" -o /tmp/typst.tar.xz
+          tar -xJf /tmp/typst.tar.xz -C /tmp
+          sudo install -m 0755 "/tmp/typst-x86_64-unknown-linux-musl/typst" /usr/local/bin/typst
+          typst --version
+
+      # Pagefind ships as an npm binary dependency, so `npm ci` provides it.
+      - name: Install deps
+        run: npm ci
+
+      - name: Build site (astro + downloads + PDF + pagefind)
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: site/dist
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
