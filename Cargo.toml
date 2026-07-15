@@ -75,7 +75,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 base64 = "0.22"
 
 # Cross-platform CSPRNG for the share server's tokenized URL (Unix + Windows).
-getrandom = "0.2"
+getrandom = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
