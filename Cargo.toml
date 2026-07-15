@@ -23,7 +23,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Markdown
-comrak = { version = "0.34", features = ["shortcodes"] }
+comrak = { version = "0.54", features = ["shortcodes"] }
 
 # Config / serialization / paths
 serde = { version = "1", features = ["derive"] }
